@@ -5,6 +5,7 @@
   "main": "src/index.js",
   "type": "module",
   "scripts": {
+    "build": "prisma generate",
     "start": "node src/index.js",
     "dev": "nodemon src/index.js",
     "prisma:generate": "prisma generate",
