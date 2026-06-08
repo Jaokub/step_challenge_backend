@@ -5,6 +5,7 @@
   "main": "src/index.js",
   "type": "module",
   "scripts": {
+    "postinstall": "prisma generate",
     "build": "prisma generate",
     "start": "node src/index.js",
     "dev": "nodemon src/index.js",
@@ -31,11 +32,11 @@
     "helmet": "^8.1.0",
     "jsonwebtoken": "^9.0.2",
     "morgan": "^1.10.0",
+    "prisma": "^6.9.0",
     "qrcode": "^1.5.4",
     "uuid": "^11.1.0"
   },
   "devDependencies": {
-    "nodemon": "^3.1.9",
-    "prisma": "^6.9.0"
+    "nodemon": "^3.1.9"
   }
 }
