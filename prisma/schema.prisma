@@ -1,0 +1,157 @@
+// This is your Prisma schema file,
+// learn more about it in the docs: https://pris.ly/d/prisma-schema
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// ─── Enums ───────────────────────────────────────────────────────────────────
+
+enum Role {
+  ADMIN
+  STAFF
+}
+
+enum ActivityStatus {
+  UPCOMING
+  ONGOING
+  COMPLETED
+  CANCELLED
+}
+
+enum CheckInMethod {
+  QR
+  MANUAL
+  GPS
+}
+
+enum GroupMemberRole {
+  OWNER
+  ADMIN
+  MEMBER
+}
+
+enum HealthSource {
+  GOOGLE_HEALTH
+  APPLE_HEALTH
+  MANUAL
+}
+
+// ─── Models ──────────────────────────────────────────────────────────────────
+
+model User {
+  id           String   @id @default(uuid())
+  email        String   @unique
+  passwordHash String
+  fullName     String
+  department   String
+  role         Role     @default(STAFF)
+  avatarUrl    String?
+  totalPoints  Int      @default(0)
+  syncToken    String   @unique @default(uuid())
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  // Relations
+  activities    Activity[]
+  checkIns      CheckIn[]
+  createdGroups AppGroup[]
+  groupMembers  GroupMember[]
+  healthRecords HealthRecord[]
+
+  @@map("users")
+}
+
+model Activity {
+  id              String         @id @default(uuid())
+  title           String
+  description     String
+  location        String
+  startDate       DateTime
+  endDate         DateTime
+  qrCode          String         @unique
+  createdById     String
+  status          ActivityStatus @default(UPCOMING)
+  maxParticipants Int?
+  imageUrl        String?
+  points          Int            @default(10)
+  createdAt       DateTime       @default(now())
+  updatedAt       DateTime       @updatedAt
+
+  // Relations
+  createdBy User      @relation(fields: [createdById], references: [id])
+  checkIns  CheckIn[]
+
+  @@map("activities")
+}
+
+model CheckIn {
+  id          String        @id @default(uuid())
+  userId      String
+  activityId  String
+  checkedInAt DateTime      @default(now())
+  latitude    Float?
+  longitude   Float?
+  method      CheckInMethod @default(QR)
+
+  // Relations
+  user     User     @relation(fields: [userId], references: [id])
+  activity Activity @relation(fields: [activityId], references: [id])
+
+  @@unique([userId, activityId])
+  @@map("check_ins")
+}
+
+model AppGroup {
+  id           String   @id @default(uuid())
+  name         String
+  description  String?
+  qrInviteCode String   @unique
+  createdById  String
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  // Relations
+  createdBy User          @relation(fields: [createdById], references: [id])
+  members   GroupMember[]
+
+  @@map("app_groups")
+}
+
+model GroupMember {
+  id       String          @id @default(uuid())
+  groupId  String
+  userId   String
+  role     GroupMemberRole  @default(MEMBER)
+  joinedAt DateTime         @default(now())
+
+  // Relations
+  group AppGroup @relation(fields: [groupId], references: [id], onDelete: Cascade)
+  user  User     @relation(fields: [userId], references: [id])
+
+  @@unique([groupId, userId])
+  @@map("group_members")
+}
+
+model HealthRecord {
+  id            String       @id @default(uuid())
+  userId        String
+  recordDate    DateTime     @db.Date
+  steps         Int          @default(0)
+  calories      Float        @default(0)
+  distanceKm    Float        @default(0)
+  activeMinutes Int          @default(0)
+  source        HealthSource @default(MANUAL)
+  createdAt     DateTime     @default(now())
+
+  // Relations
+  user User @relation(fields: [userId], references: [id])
+
+  @@unique([userId, recordDate, source])
+  @@map("health_records")
+}
