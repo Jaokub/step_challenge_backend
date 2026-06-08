@@ -50,6 +50,7 @@ export const syncHealthData = async (req, res) => {
         calories: calories !== undefined ? calories : undefined,
         distanceKm: distanceKm !== undefined ? distanceKm : undefined,
         activeMinutes: activeMinutes !== undefined ? activeMinutes : undefined,
+        createdAt: new Date(),
       },
       create: {
         userId,
@@ -342,6 +343,7 @@ export const syncFromWebhook = async (req, res) => {
         distanceKm: distanceKm !== undefined ? parseNumber(distanceKm) : undefined,
         calories: calories !== undefined ? parseNumber(calories) : undefined,
         activeMinutes: activeMinutes !== undefined ? parseNumber(activeMinutes) : undefined,
+        createdAt: new Date(),
       },
       create: {
         userId: user.id,
