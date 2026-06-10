@@ -23,7 +23,7 @@ function sanitizeUser(user) {
  */
 export async function register(req, res) {
   try {
-    const { email, password, fullName, department } = req.body;
+    const { email, password, fullName, nickname, department } = req.body;
 
     // Check if email is already registered
     const existingUser = await prisma.user.findUnique({ where: { email } });
@@ -42,6 +42,7 @@ export async function register(req, res) {
         email,
         passwordHash,
         fullName,
+        nickname,
         department,
         role: 'STAFF',
         totalPoints: 0,

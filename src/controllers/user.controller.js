@@ -63,11 +63,12 @@ export async function getProfile(req, res) {
 export async function updateProfile(req, res) {
   try {
     const userId = req.user.id;
-    const { fullName, department, avatarUrl } = req.body;
+    const { fullName, nickname, department, avatarUrl } = req.body;
 
     // Build update data — only include fields that were provided
     const updateData = {};
     if (fullName !== undefined) updateData.fullName = fullName;
+    if (nickname !== undefined) updateData.nickname = nickname;
     if (department !== undefined) updateData.department = department;
     if (avatarUrl !== undefined) updateData.avatarUrl = avatarUrl;
 
@@ -75,7 +76,7 @@ export async function updateProfile(req, res) {
       return res.status(400).json({
         success: false,
         data: null,
-        message: 'No fields to update. Provide at least one of: fullName, department, avatarUrl.',
+        message: 'No fields to update. Provide at least one of: fullName, nickname, department, avatarUrl.',
       });
     }
 
@@ -102,15 +103,35 @@ export async function updateProfile(req, res) {
 /**
  * GET /users/leaderboard
  * Get users ranked by totalPoints with pagination.
- * Query params: limit (default 10), offset (default 0).
+ * Query params: limit (default 10), offset (default 0), type (global|friends).
  */
 export async function getLeaderboard(req, res) {
   try {
     const limit = Math.min(Math.max(parseInt(req.query.limit, 10) || 10, 1), 100);
     const offset = Math.max(parseInt(req.query.offset, 10) || 0, 0);
+    const type = req.query.type === 'friends' ? 'friends' : 'global';
+    const userId = req.user.id;
+
+    let whereClause = {};
+
+    if (type === 'friends') {
+      // Find all accepted friends
+      const friendships = await prisma.friendship.findMany({
+        where: {
+          status: 'ACCEPTED',
+          OR: [{ userId }, { friendId: userId }],
+        },
+      });
+
+      const friendIds = friendships.map(f => (f.userId === userId ? f.friendId : f.userId));
+      friendIds.push(userId); // Include self
+
+      whereClause = { id: { in: friendIds } };
+    }
 
     const [users, total] = await Promise.all([
       prisma.user.findMany({
+        where: whereClause,
         orderBy: { totalPoints: 'desc' },
         skip: offset,
         take: limit,
@@ -122,7 +143,7 @@ export async function getLeaderboard(req, res) {
           totalPoints: true,
         },
       }),
-      prisma.user.count(),
+      prisma.user.count({ where: whereClause }),
     ]);
 
     // Add rank based on offset position
@@ -141,7 +162,7 @@ export async function getLeaderboard(req, res) {
           offset,
         },
       },
-      message: 'Leaderboard retrieved successfully.',
+      message: `${type === 'friends' ? 'Friends' : 'Global'} leaderboard retrieved successfully.`,
     });
   } catch (error) {
     console.error('GetLeaderboard error:', error);
@@ -199,6 +220,58 @@ export async function getAllUsers(req, res) {
     });
   } catch (error) {
     console.error('GetAllUsers error:', error);
+    return res.status(500).json({
+      success: false,
+      data: null,
+      message: 'Internal server error.',
+    });
+  }
+}
+
+/**
+ * GET /users/search
+ * Search users by name or email (excluding self) to add as friends.
+ * Query params: q (search query).
+ */
+export async function searchUsers(req, res) {
+  try {
+    const q = req.query.q?.trim();
+    if (!q) {
+      return res.status(400).json({
+        success: false,
+        data: null,
+        message: 'Search query "q" is required.',
+      });
+    }
+
+    const userId = req.user.id;
+
+    // Search users by email or fullName, excluding the current user
+    const users = await prisma.user.findMany({
+      where: {
+        id: { not: userId },
+        OR: [
+          { fullName: { contains: q, mode: 'insensitive' } },
+          { email: { contains: q, mode: 'insensitive' } },
+        ],
+      },
+      select: {
+        id: true,
+        fullName: true,
+        email: true,
+        department: true,
+        avatarUrl: true,
+      },
+      take: 20, // Limit search results to 20
+    });
+
+    return res.status(200).json({
+      success: true,
+      data: users,
+      message: 'Search successful.',
+    });
+  } catch (error) {
+    console.error('SearchUsers error:', error);
     return res.status(500).json({
       success: false,
       data: null,

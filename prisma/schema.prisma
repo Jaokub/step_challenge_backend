@@ -17,6 +17,11 @@ enum Role {
   STAFF
 }
 
+enum FriendshipStatus {
+  PENDING
+  ACCEPTED
+}
+
 enum ActivityStatus {
   UPCOMING
   ONGOING
@@ -49,6 +54,7 @@ model User {
   email        String   @unique
   passwordHash String
   fullName     String
+  nickname     String?
   department   String
   role         Role     @default(STAFF)
   avatarUrl    String?
@@ -63,6 +69,10 @@ model User {
   createdGroups AppGroup[]
   groupMembers  GroupMember[]
   healthRecords HealthRecord[]
+
+  // Friend System
+  friendsAdded   Friendship[] @relation("UserFriends")
+  friendsAddedBy Friendship[] @relation("FriendUsers")
 
   @@map("users")
 }
@@ -127,8 +137,8 @@ model GroupMember {
   id       String          @id @default(uuid())
   groupId  String
   userId   String
-  role     GroupMemberRole  @default(MEMBER)
-  joinedAt DateTime         @default(now())
+  role     GroupMemberRole @default(MEMBER)
+  joinedAt DateTime        @default(now())
 
   // Relations
   group AppGroup @relation(fields: [groupId], references: [id], onDelete: Cascade)
@@ -154,4 +164,19 @@ model HealthRecord {
 
   @@unique([userId, recordDate, source])
   @@map("health_records")
+}
+
+model Friendship {
+  id        String           @id @default(uuid())
+  userId    String
+  friendId  String
+  status    FriendshipStatus @default(PENDING)
+  createdAt DateTime         @default(now())
+
+  // Relations
+  user   User @relation("UserFriends", fields: [userId], references: [id], onDelete: Cascade)
+  friend User @relation("FriendUsers", fields: [friendId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, friendId])
+  @@map("friendships")
 }

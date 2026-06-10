@@ -5,6 +5,7 @@ import {
   updateProfile,
   getLeaderboard,
   getAllUsers,
+  searchUsers,
 } from '../controllers/user.controller.js';
 import { authenticate, requireRole } from '../middleware/auth.js';
 import { validate } from '../middleware/validate.js';
@@ -25,6 +26,12 @@ router.get('/leaderboard', authenticate, getLeaderboard);
 router.get('/profile/:id', authenticate, getProfile);
 
 /**
+ * GET /users/search
+ * Search users by name or email
+ */
+router.get('/search', authenticate, searchUsers);
+
+/**
  * PUT /users/profile
  * Update the authenticated user's own profile.
  */
@@ -37,6 +44,9 @@ router.put(
       .trim()
       .notEmpty()
       .withMessage('Full name cannot be empty.'),
+    body('nickname')
+      .optional()
+      .trim(),
     body('department')
       .optional()
       .trim(),

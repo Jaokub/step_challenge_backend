@@ -37,7 +37,12 @@ export const syncHealthData = async (req, res) => {
       });
     }
 
-    const healthRecord = await prisma.healthRecord.upsert({
+    // --- Points Calculation Logic ---
+    const STEPS_PER_POINT = 100;
+    const CALORIES_PER_POINT = 10;
+
+    // Fetch existing record to calculate delta
+    const existingRecord = await prisma.healthRecord.findUnique({
       where: {
         userId_recordDate_source: {
           userId,
@@ -45,23 +50,85 @@ export const syncHealthData = async (req, res) => {
           source,
         },
       },
-      update: {
-        steps: steps !== undefined ? steps : undefined,
-        calories: calories !== undefined ? calories : undefined,
-        distanceKm: distanceKm !== undefined ? distanceKm : undefined,
-        activeMinutes: activeMinutes !== undefined ? activeMinutes : undefined,
-        createdAt: new Date(),
-      },
-      create: {
-        userId,
-        recordDate: normalizedDate,
-        source,
-        steps: steps || 0,
-        calories: calories || 0,
-        distanceKm: distanceKm || 0,
-        activeMinutes: activeMinutes || 0,
-      },
     });
+
+    const oldSteps = existingRecord?.steps || 0;
+    const oldCalories = existingRecord?.calories || 0;
+    const oldPoints = Math.floor(oldSteps / STEPS_PER_POINT) + Math.floor(oldCalories / CALORIES_PER_POINT);
+
+    const newSteps = steps !== undefined ? steps : oldSteps;
+    const newCalories = calories !== undefined ? calories : oldCalories;
+    const newPoints = Math.floor(newSteps / STEPS_PER_POINT) + Math.floor(newCalories / CALORIES_PER_POINT);
+
+    const deltaPoints = newPoints - oldPoints;
+    // --------------------------------
+
+    let healthRecord;
+    // Use transaction if deltaPoints !== 0 to ensure atomicity
+    if (deltaPoints !== 0) {
+      const [upsertedRecord, updatedUser] = await prisma.$transaction([
+        prisma.healthRecord.upsert({
+          where: {
+            userId_recordDate_source: {
+              userId,
+              recordDate: normalizedDate,
+              source,
+            },
+          },
+          update: {
+            steps: steps !== undefined ? steps : undefined,
+            calories: calories !== undefined ? calories : undefined,
+            distanceKm: distanceKm !== undefined ? distanceKm : undefined,
+            activeMinutes: activeMinutes !== undefined ? activeMinutes : undefined,
+            createdAt: new Date(),
+          },
+          create: {
+            userId,
+            recordDate: normalizedDate,
+            source,
+            steps: steps || 0,
+            calories: calories || 0,
+            distanceKm: distanceKm || 0,
+            activeMinutes: activeMinutes || 0,
+          },
+        }),
+        prisma.user.update({
+          where: { id: userId },
+          data: {
+            totalPoints: {
+              increment: deltaPoints,
+            },
+          },
+        }),
+      ]);
+      healthRecord = upsertedRecord;
+    } else {
+      healthRecord = await prisma.healthRecord.upsert({
+        where: {
+          userId_recordDate_source: {
+            userId,
+            recordDate: normalizedDate,
+            source,
+          },
+        },
+        update: {
+          steps: steps !== undefined ? steps : undefined,
+          calories: calories !== undefined ? calories : undefined,
+          distanceKm: distanceKm !== undefined ? distanceKm : undefined,
+          activeMinutes: activeMinutes !== undefined ? activeMinutes : undefined,
+          createdAt: new Date(),
+        },
+        create: {
+          userId,
+          recordDate: normalizedDate,
+          source,
+          steps: steps || 0,
+          calories: calories || 0,
+          distanceKm: distanceKm || 0,
+          activeMinutes: activeMinutes || 0,
+        },
+      });
+    }
 
     return res.status(200).json({
       success: true,
@@ -330,7 +397,16 @@ export const syncFromWebhook = async (req, res) => {
 
     const parseNumber = (val) => val ? Number(String(val).replace(/,/g, '')) : undefined;
 
-    const healthRecord = await prisma.healthRecord.upsert({
+    const parsedSteps = parseNumber(steps);
+    const parsedCalories = parseNumber(calories);
+    const parsedDistanceKm = parseNumber(distanceKm);
+    const parsedActiveMinutes = parseNumber(activeMinutes);
+
+    // --- Points Calculation Logic ---
+    const STEPS_PER_POINT = 100;
+    const CALORIES_PER_POINT = 10;
+
+    const existingRecord = await prisma.healthRecord.findUnique({
       where: {
         userId_recordDate_source: {
           userId: user.id,
@@ -338,23 +414,84 @@ export const syncFromWebhook = async (req, res) => {
           source: healthSource,
         },
       },
-      update: {
-        steps: steps !== undefined ? parseNumber(steps) : undefined,
-        distanceKm: distanceKm !== undefined ? parseNumber(distanceKm) : undefined,
-        calories: calories !== undefined ? parseNumber(calories) : undefined,
-        activeMinutes: activeMinutes !== undefined ? parseNumber(activeMinutes) : undefined,
-        createdAt: new Date(),
-      },
-      create: {
-        userId: user.id,
-        recordDate: normalizedDate,
-        source: healthSource,
-        steps: parseNumber(steps) || 0,
-        distanceKm: parseNumber(distanceKm) || 0,
-        calories: parseNumber(calories) || 0,
-        activeMinutes: parseNumber(activeMinutes) || 0,
-      },
     });
+
+    const oldSteps = existingRecord?.steps || 0;
+    const oldCalories = existingRecord?.calories || 0;
+    const oldPoints = Math.floor(oldSteps / STEPS_PER_POINT) + Math.floor(oldCalories / CALORIES_PER_POINT);
+
+    const newSteps = parsedSteps !== undefined ? parsedSteps : oldSteps;
+    const newCalories = parsedCalories !== undefined ? parsedCalories : oldCalories;
+    const newPoints = Math.floor(newSteps / STEPS_PER_POINT) + Math.floor(newCalories / CALORIES_PER_POINT);
+
+    const deltaPoints = newPoints - oldPoints;
+    // --------------------------------
+
+    let healthRecord;
+    if (deltaPoints !== 0) {
+      const [upsertedRecord, updatedUser] = await prisma.$transaction([
+        prisma.healthRecord.upsert({
+          where: {
+            userId_recordDate_source: {
+              userId: user.id,
+              recordDate: normalizedDate,
+              source: healthSource,
+            },
+          },
+          update: {
+            steps: parsedSteps !== undefined ? parsedSteps : undefined,
+            distanceKm: parsedDistanceKm !== undefined ? parsedDistanceKm : undefined,
+            calories: parsedCalories !== undefined ? parsedCalories : undefined,
+            activeMinutes: parsedActiveMinutes !== undefined ? parsedActiveMinutes : undefined,
+            createdAt: new Date(),
+          },
+          create: {
+            userId: user.id,
+            recordDate: normalizedDate,
+            source: healthSource,
+            steps: parsedSteps || 0,
+            distanceKm: parsedDistanceKm || 0,
+            calories: parsedCalories || 0,
+            activeMinutes: parsedActiveMinutes || 0,
+          },
+        }),
+        prisma.user.update({
+          where: { id: user.id },
+          data: {
+            totalPoints: {
+              increment: deltaPoints,
+            },
+          },
+        }),
+      ]);
+      healthRecord = upsertedRecord;
+    } else {
+      healthRecord = await prisma.healthRecord.upsert({
+        where: {
+          userId_recordDate_source: {
+            userId: user.id,
+            recordDate: normalizedDate,
+            source: healthSource,
+          },
+        },
+        update: {
+          steps: parsedSteps !== undefined ? parsedSteps : undefined,
+          distanceKm: parsedDistanceKm !== undefined ? parsedDistanceKm : undefined,
+          calories: parsedCalories !== undefined ? parsedCalories : undefined,
+          activeMinutes: parsedActiveMinutes !== undefined ? parsedActiveMinutes : undefined,
+          createdAt: new Date(),
+        },
+        create: {
+          userId: user.id,
+          recordDate: normalizedDate,
+          source: healthSource,
+          steps: parsedSteps || 0,
+          distanceKm: parsedDistanceKm || 0,
+          calories: parsedCalories || 0,
+          activeMinutes: parsedActiveMinutes || 0,
+        },
+      });
+    }
 
     return res.status(200).json({
       success: true,

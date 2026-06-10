@@ -24,6 +24,9 @@ router.post(
       .trim()
       .notEmpty()
       .withMessage('Full name is required.'),
+    body('nickname')
+      .optional()
+      .trim(),
     body('department')
       .optional()
       .trim(),
