@@ -23,6 +23,7 @@ import groupRoutes from './routes/group.routes.js';
 import dashboardRoutes from './routes/dashboard.routes.js';
 import healthRoutes from './routes/health.routes.js';
 import friendRoutes from './routes/friend.routes.js';
+import leaderboardRoutes from './routes/leaderboard.routes.js';
 
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -63,6 +64,7 @@ app.use('/api/v1/groups', groupRoutes);
 app.use('/api/v1/dashboard', dashboardRoutes);
 app.use('/api/v1/health', healthRoutes);
 app.use('/api/v1/friends', friendRoutes);
+app.use('/api/v1/leaderboard', leaderboardRoutes);
 
 // ─── 404 Handler ─────────────────────────────────────────────────────────────
 

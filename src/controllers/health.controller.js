@@ -1,4 +1,5 @@
 import prisma from '../config/prisma.js';
+import pointsService from '../services/points.service.js';
 
 /**
  * @module HealthController
@@ -37,11 +38,31 @@ export const syncHealthData = async (req, res) => {
       });
     }
 
-    // --- Points Calculation Logic ---
-    const STEPS_PER_POINT = 100;
-    const CALORIES_PER_POINT = 10;
+    // Calculate current streak dynamically
+    const pastRecords = await prisma.healthRecord.findMany({
+      where: { userId },
+      orderBy: { recordDate: 'desc' },
+      select: { recordDate: true }
+    });
+    
+    // Simple streak calculation
+    let currentStreak = 0;
+    const today = new Date(Date.UTC(new Date().getUTCFullYear(), new Date().getUTCMonth(), new Date().getUTCDate()));
+    const uniqueDates = [...new Set(pastRecords.map(r => r.recordDate.toISOString().split('T')[0]))];
+    
+    for (let i = 0; i < uniqueDates.length; i++) {
+      const d = new Date(uniqueDates[i]);
+      const diffTime = Math.abs(today - d);
+      const diffDays = Math.ceil(diffTime / (1000 * 60 * 60 * 24));
+      
+      if (diffDays === currentStreak || diffDays === currentStreak + 1) {
+        currentStreak = diffDays === currentStreak + 1 ? currentStreak + 1 : currentStreak;
+      } else if (diffDays > currentStreak + 1) {
+        break; // streak broken
+      }
+    }
 
-    // Fetch existing record to calculate delta
+    // --- Points Calculation Logic ---
     const existingRecord = await prisma.healthRecord.findUnique({
       where: {
         userId_recordDate_source: {
@@ -52,15 +73,19 @@ export const syncHealthData = async (req, res) => {
       },
     });
 
-    const oldSteps = existingRecord?.steps || 0;
-    const oldCalories = existingRecord?.calories || 0;
-    const oldPoints = Math.floor(oldSteps / STEPS_PER_POINT) + Math.floor(oldCalories / CALORIES_PER_POINT);
+    const oldMetrics = {
+      steps: existingRecord?.steps || 0,
+      calories: existingRecord?.calories || 0,
+      distanceKm: existingRecord?.distanceKm || 0
+    };
 
-    const newSteps = steps !== undefined ? steps : oldSteps;
-    const newCalories = calories !== undefined ? calories : oldCalories;
-    const newPoints = Math.floor(newSteps / STEPS_PER_POINT) + Math.floor(newCalories / CALORIES_PER_POINT);
+    const newMetrics = {
+      steps: steps !== undefined ? steps : oldMetrics.steps,
+      calories: calories !== undefined ? calories : oldMetrics.calories,
+      distanceKm: distanceKm !== undefined ? distanceKm : oldMetrics.distanceKm
+    };
 
-    const deltaPoints = newPoints - oldPoints;
+    const deltaPoints = pointsService.calculatePointsDelta(oldMetrics, newMetrics, currentStreak);
     // --------------------------------
 
     let healthRecord;
@@ -402,10 +427,30 @@ export const syncFromWebhook = async (req, res) => {
     const parsedDistanceKm = parseNumber(distanceKm);
     const parsedActiveMinutes = parseNumber(activeMinutes);
 
-    // --- Points Calculation Logic ---
-    const STEPS_PER_POINT = 100;
-    const CALORIES_PER_POINT = 10;
+    // Calculate current streak dynamically
+    const pastRecords = await prisma.healthRecord.findMany({
+      where: { userId: user.id },
+      orderBy: { recordDate: 'desc' },
+      select: { recordDate: true }
+    });
+    
+    let currentStreak = 0;
+    const today = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate()));
+    const uniqueDates = [...new Set(pastRecords.map(r => r.recordDate.toISOString().split('T')[0]))];
+    
+    for (let i = 0; i < uniqueDates.length; i++) {
+      const d = new Date(uniqueDates[i]);
+      const diffTime = Math.abs(today - d);
+      const diffDays = Math.ceil(diffTime / (1000 * 60 * 60 * 24));
+      
+      if (diffDays === currentStreak || diffDays === currentStreak + 1) {
+        currentStreak = diffDays === currentStreak + 1 ? currentStreak + 1 : currentStreak;
+      } else if (diffDays > currentStreak + 1) {
+        break;
+      }
+    }
 
+    // --- Points Calculation Logic ---
     const existingRecord = await prisma.healthRecord.findUnique({
       where: {
         userId_recordDate_source: {
@@ -416,15 +461,19 @@ export const syncFromWebhook = async (req, res) => {
       },
     });
 
-    const oldSteps = existingRecord?.steps || 0;
-    const oldCalories = existingRecord?.calories || 0;
-    const oldPoints = Math.floor(oldSteps / STEPS_PER_POINT) + Math.floor(oldCalories / CALORIES_PER_POINT);
+    const oldMetrics = {
+      steps: existingRecord?.steps || 0,
+      calories: existingRecord?.calories || 0,
+      distanceKm: existingRecord?.distanceKm || 0
+    };
 
-    const newSteps = parsedSteps !== undefined ? parsedSteps : oldSteps;
-    const newCalories = parsedCalories !== undefined ? parsedCalories : oldCalories;
-    const newPoints = Math.floor(newSteps / STEPS_PER_POINT) + Math.floor(newCalories / CALORIES_PER_POINT);
+    const newMetrics = {
+      steps: parsedSteps !== undefined ? parsedSteps : oldMetrics.steps,
+      calories: parsedCalories !== undefined ? parsedCalories : oldMetrics.calories,
+      distanceKm: parsedDistanceKm !== undefined ? parsedDistanceKm : oldMetrics.distanceKm
+    };
 
-    const deltaPoints = newPoints - oldPoints;
+    const deltaPoints = pointsService.calculatePointsDelta(oldMetrics, newMetrics, currentStreak);
     // --------------------------------
 
     let healthRecord;
