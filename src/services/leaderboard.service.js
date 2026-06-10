@@ -1,4 +1,5 @@
 import prisma from '../config/prisma.js';
+import { calculateHealthPoints } from './points.service.js';
 
 /**
  * @module LeaderboardService
@@ -81,15 +82,24 @@ export const getFriendsLeaderboard = async (userId, startDate, endDate) => {
         }
       },
       _sum: {
-        steps: true
+        steps: true,
+        calories: true,
+        distanceKm: true
       }
     });
 
-    const stepsMap = new Map();
-    healthRecords.forEach(hr => stepsMap.set(hr.userId, hr._sum.steps || 0));
+    const pointsMap = new Map();
+    healthRecords.forEach(hr => {
+      const metrics = {
+        steps: hr._sum.steps || 0,
+        calories: hr._sum.calories || 0,
+        distanceKm: hr._sum.distanceKm || 0
+      };
+      pointsMap.set(hr.userId, calculateHealthPoints(metrics, 0));
+    });
 
     friendsList.forEach(u => {
-      u.points = stepsMap.get(u.id) || 0;
+      u.points = pointsMap.get(u.id) || 0;
     });
   } else {
     friendsList.forEach(u => {
@@ -137,15 +147,24 @@ export const getGroupLeaderboard = async (groupId, startDate, endDate) => {
         }
       },
       _sum: {
-        steps: true
+        steps: true,
+        calories: true,
+        distanceKm: true
       }
     });
 
-    const stepsMap = new Map();
-    healthRecords.forEach(hr => stepsMap.set(hr.userId, hr._sum.steps || 0));
+    const pointsMap = new Map();
+    healthRecords.forEach(hr => {
+      const metrics = {
+        steps: hr._sum.steps || 0,
+        calories: hr._sum.calories || 0,
+        distanceKm: hr._sum.distanceKm || 0
+      };
+      pointsMap.set(hr.userId, calculateHealthPoints(metrics, 0));
+    });
 
     membersList.forEach(u => {
-      u.points = stepsMap.get(u.id) || 0;
+      u.points = pointsMap.get(u.id) || 0;
     });
   } else {
     membersList.forEach(u => {
