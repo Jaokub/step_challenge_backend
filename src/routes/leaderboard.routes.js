@@ -1,5 +1,5 @@
 import express from 'express';
-import { protect } from '../middleware/auth.middleware.js';
+import { authenticate } from '../middleware/auth.js';
 import {
   getGlobalLeaderboard,
   getFriendsLeaderboard,
@@ -9,7 +9,7 @@ import {
 const router = express.Router();
 
 // All routes require authentication
-router.use(protect);
+router.use(authenticate);
 
 router.get('/global', getGlobalLeaderboard);
 router.get('/friends', getFriendsLeaderboard);
