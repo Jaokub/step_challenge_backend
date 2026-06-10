@@ -31,10 +31,7 @@ const PORT = process.env.PORT || 3000;
 // ─── Global Middleware ───────────────────────────────────────────────────────
 
 app.use(helmet());
-app.use(cors({
-  origin: process.env.CORS_ORIGIN ? process.env.CORS_ORIGIN.split(',') : true,
-  credentials: true,
-}));
+// CORS is now handled by vercel.json at the edge level
 app.use(compression());
 app.use(morgan(process.env.NODE_ENV === 'production' ? 'combined' : 'dev'));
 app.use(express.json({ limit: '10mb' }));
