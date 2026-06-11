@@ -69,13 +69,28 @@ export const syncHealthRecord = async (userId, normalizedDate, source, metrics) 
   };
 
   if (deltaPoints !== 0) {
-    const [upsertedRecord] = await prisma.$transaction([
-      prisma.healthRecord.upsert(upsertData),
-      prisma.user.update({
-        where: { id: userId },
-        data: { totalPoints: { increment: deltaPoints } },
-      }),
-    ]);
+    const [upsertedRecord] = await prisma.$transaction(async (tx) => {
+      const upserted = await tx.healthRecord.upsert(upsertData);
+
+      if (deltaPoints > 0) {
+        await tx.user.update({
+          where: { id: userId },
+          data: { totalPoints: { increment: deltaPoints } },
+        });
+      } else {
+        // Clamp: never let totalPoints drop below 0
+        const user = await tx.user.findUnique({ where: { id: userId }, select: { totalPoints: true } });
+        const safeDecrement = Math.min(Math.abs(deltaPoints), user?.totalPoints ?? 0);
+        if (safeDecrement > 0) {
+          await tx.user.update({
+            where: { id: userId },
+            data: { totalPoints: { decrement: safeDecrement } },
+          });
+        }
+      }
+
+      return upserted;
+    });
     return upsertedRecord;
   }
 

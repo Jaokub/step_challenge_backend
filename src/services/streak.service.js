@@ -37,7 +37,7 @@ export const calculateCheckInStreak = async (userId) => {
 const getUniqueDateStrings = (dates) => {
   const toDateStr = (d) => {
     const date = new Date(d);
-    return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}-${String(date.getDate()).padStart(2, '0')}`;
+    return `${date.getUTCFullYear()}-${String(date.getUTCMonth() + 1).padStart(2, '0')}-${String(date.getUTCDate()).padStart(2, '0')}`;
   };
 
   return [...new Set(dates.map(toDateStr))].sort((a, b) => b.localeCompare(a));
@@ -51,12 +51,11 @@ const getUniqueDateStrings = (dates) => {
  * @returns {number}
  */
 const countConsecutiveDays = (uniqueDates) => {
-  const today = new Date();
-  const todayStr = toLocalDateStr(today);
+  const now = new Date();
+  const todayStr = toUTCDateStr(now);
 
-  const yesterday = new Date(today);
-  yesterday.setDate(yesterday.getDate() - 1);
-  const yesterdayStr = toLocalDateStr(yesterday);
+  const yesterday = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate() - 1));
+  const yesterdayStr = toUTCDateStr(yesterday);
 
   // Streak must be active (ending today or yesterday)
   if (uniqueDates[0] !== todayStr && uniqueDates[0] !== yesterdayStr) return 0;
@@ -78,11 +77,12 @@ const countConsecutiveDays = (uniqueDates) => {
 };
 
 /**
- * Format a Date as a local YYYY-MM-DD string.
+ * Format a Date as a UTC YYYY-MM-DD string.
+ * Uses UTC methods to stay consistent with how dates are stored in the database.
  * @param {Date} date
  * @returns {string}
  */
-const toLocalDateStr = (date) =>
-  `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}-${String(date.getDate()).padStart(2, '0')}`;
+const toUTCDateStr = (date) =>
+  `${date.getUTCFullYear()}-${String(date.getUTCMonth() + 1).padStart(2, '0')}-${String(date.getUTCDate()).padStart(2, '0')}`;
 
 export default { calculateCheckInStreak };
