@@ -1,13 +1,23 @@
 import prisma from '../config/prisma.js';
-import pointsService from '../services/points.service.js';
+import { syncHealthRecord, aggregateByDate } from '../services/healthSync.service.js';
+import { parseHealthNumber } from '../services/healthSync.service.js';
+
+const VALID_SOURCES = ['GOOGLE_HEALTH', 'APPLE_HEALTH', 'MANUAL'];
 
 /**
- * @module HealthController
- * @description Controller for health data management operations
+ * Normalise a date string to a UTC midnight Date object.
+ * @param {string} dateStr
+ * @returns {{ date: Date|null, error: string|null }}
  */
+const normaliseDate = (dateStr) => {
+  const parsed = new Date(dateStr);
+  if (isNaN(parsed.getTime())) return { date: null, error: 'Invalid recordDate format' };
+  const date = new Date(Date.UTC(parsed.getUTCFullYear(), parsed.getUTCMonth(), parsed.getUTCDate()));
+  return { date, error: null };
+};
 
 /**
- * Sync health data from mobile app. Upserts based on [userId, recordDate, source].
+ * Sync health data from the mobile app. Upserts on [userId, recordDate, source].
  * @route POST /api/health/sync
  */
 export const syncHealthData = async (req, res) => {
@@ -15,145 +25,22 @@ export const syncHealthData = async (req, res) => {
     const userId = req.user.id;
     const { recordDate, source, steps, calories, distanceKm, activeMinutes } = req.body;
 
-    const parsedDate = new Date(recordDate);
-    // Normalize to date only (strip time component)
-    const normalizedDate = new Date(
-      Date.UTC(parsedDate.getUTCFullYear(), parsedDate.getUTCMonth(), parsedDate.getUTCDate())
-    );
+    const { date: normalizedDate, error: dateError } = normaliseDate(recordDate);
+    if (dateError) {
+      return res.status(400).json({ success: false, data: null, message: dateError });
+    }
 
-    if (isNaN(normalizedDate.getTime())) {
+    if (!VALID_SOURCES.includes(source)) {
       return res.status(400).json({
         success: false,
         data: null,
-        message: 'Invalid recordDate format',
+        message: `Invalid source. Must be one of: ${VALID_SOURCES.join(', ')}`,
       });
     }
 
-    const validSources = ['GOOGLE_HEALTH', 'APPLE_HEALTH', 'MANUAL'];
-    if (!validSources.includes(source)) {
-      return res.status(400).json({
-        success: false,
-        data: null,
-        message: `Invalid source. Must be one of: ${validSources.join(', ')}`,
-      });
-    }
-
-    // Calculate current streak dynamically
-    const pastRecords = await prisma.healthRecord.findMany({
-      where: { userId },
-      orderBy: { recordDate: 'desc' },
-      select: { recordDate: true }
+    const healthRecord = await syncHealthRecord(userId, normalizedDate, source, {
+      steps, calories, distanceKm, activeMinutes,
     });
-    
-    // Simple streak calculation
-    let currentStreak = 0;
-    const today = new Date(Date.UTC(new Date().getUTCFullYear(), new Date().getUTCMonth(), new Date().getUTCDate()));
-    const uniqueDates = [...new Set(pastRecords.map(r => r.recordDate.toISOString().split('T')[0]))];
-    
-    for (let i = 0; i < uniqueDates.length; i++) {
-      const d = new Date(uniqueDates[i]);
-      const diffTime = Math.abs(today - d);
-      const diffDays = Math.ceil(diffTime / (1000 * 60 * 60 * 24));
-      
-      if (diffDays === currentStreak || diffDays === currentStreak + 1) {
-        currentStreak = diffDays === currentStreak + 1 ? currentStreak + 1 : currentStreak;
-      } else if (diffDays > currentStreak + 1) {
-        break; // streak broken
-      }
-    }
-
-    // --- Points Calculation Logic ---
-    const existingRecord = await prisma.healthRecord.findUnique({
-      where: {
-        userId_recordDate_source: {
-          userId,
-          recordDate: normalizedDate,
-          source,
-        },
-      },
-    });
-
-    const oldMetrics = {
-      steps: existingRecord?.steps || 0,
-      calories: existingRecord?.calories || 0,
-      distanceKm: existingRecord?.distanceKm || 0
-    };
-
-    const newMetrics = {
-      steps: steps !== undefined ? steps : oldMetrics.steps,
-      calories: calories !== undefined ? calories : oldMetrics.calories,
-      distanceKm: distanceKm !== undefined ? distanceKm : oldMetrics.distanceKm
-    };
-
-    const deltaPoints = pointsService.calculatePointsDelta(oldMetrics, newMetrics, currentStreak);
-    // --------------------------------
-
-    let healthRecord;
-    // Use transaction if deltaPoints !== 0 to ensure atomicity
-    if (deltaPoints !== 0) {
-      const [upsertedRecord, updatedUser] = await prisma.$transaction([
-        prisma.healthRecord.upsert({
-          where: {
-            userId_recordDate_source: {
-              userId,
-              recordDate: normalizedDate,
-              source,
-            },
-          },
-          update: {
-            steps: steps !== undefined ? steps : undefined,
-            calories: calories !== undefined ? calories : undefined,
-            distanceKm: distanceKm !== undefined ? distanceKm : undefined,
-            activeMinutes: activeMinutes !== undefined ? activeMinutes : undefined,
-            createdAt: new Date(),
-          },
-          create: {
-            userId,
-            recordDate: normalizedDate,
-            source,
-            steps: steps || 0,
-            calories: calories || 0,
-            distanceKm: distanceKm || 0,
-            activeMinutes: activeMinutes || 0,
-          },
-        }),
-        prisma.user.update({
-          where: { id: userId },
-          data: {
-            totalPoints: {
-              increment: deltaPoints,
-            },
-          },
-        }),
-      ]);
-      healthRecord = upsertedRecord;
-    } else {
-      healthRecord = await prisma.healthRecord.upsert({
-        where: {
-          userId_recordDate_source: {
-            userId,
-            recordDate: normalizedDate,
-            source,
-          },
-        },
-        update: {
-          steps: steps !== undefined ? steps : undefined,
-          calories: calories !== undefined ? calories : undefined,
-          distanceKm: distanceKm !== undefined ? distanceKm : undefined,
-          activeMinutes: activeMinutes !== undefined ? activeMinutes : undefined,
-          createdAt: new Date(),
-        },
-        create: {
-          userId,
-          recordDate: normalizedDate,
-          source,
-          steps: steps || 0,
-          calories: calories || 0,
-          distanceKm: distanceKm || 0,
-          activeMinutes: activeMinutes || 0,
-        },
-      });
-    }
 
     return res.status(200).json({
       success: true,
@@ -161,17 +48,52 @@ export const syncHealthData = async (req, res) => {
       message: 'Health data synced successfully',
     });
   } catch (error) {
-    console.error('Error syncing health data:', error);
-    return res.status(500).json({
-      success: false,
-      data: null,
-      message: 'Failed to sync health data',
-    });
+    console.error('syncHealthData error:', error);
+    return res.status(500).json({ success: false, data: null, message: 'Failed to sync health data' });
   }
 };
 
 /**
- * Get current user's health records with optional date range filter, sorted by date desc
+ * Sync health data via webhook (iOS Shortcuts). Authenticated by syncToken.
+ * @route POST /api/health/webhook
+ */
+export const syncFromWebhook = async (req, res) => {
+  try {
+    const { syncToken, steps, distanceKm, calories, activeMinutes, source } = req.body;
+
+    if (!syncToken) {
+      return res.status(401).json({ success: false, message: 'Missing syncToken' });
+    }
+
+    const user = await prisma.user.findUnique({ where: { syncToken } });
+    if (!user) {
+      return res.status(401).json({ success: false, message: 'Invalid syncToken' });
+    }
+
+    const now = new Date();
+    const normalizedDate = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate()));
+    const healthSource = source || 'APPLE_HEALTH';
+
+    const healthRecord = await syncHealthRecord(user.id, normalizedDate, healthSource, {
+      steps: parseHealthNumber(steps),
+      calories: parseHealthNumber(calories),
+      distanceKm: parseHealthNumber(distanceKm),
+      activeMinutes: parseHealthNumber(activeMinutes),
+    });
+
+    return res.status(200).json({
+      success: true,
+      data: healthRecord,
+      message: 'Health data synced via webhook successfully',
+    });
+  } catch (error) {
+    console.error('syncFromWebhook error:', error);
+    return res.status(500).json({ success: false, message: 'Failed to sync health data from webhook' });
+  }
+};
+
+/**
+ * Get current user's health records with optional date range filter.
  * @route GET /api/health/history
  */
 export const getMyHealthHistory = async (req, res) => {
@@ -181,21 +103,17 @@ export const getMyHealthHistory = async (req, res) => {
 
     const where = { userId };
 
-    // Apply date range filter if provided
     if (startDate || endDate) {
       where.recordDate = {};
       if (startDate) {
-        const parsedStart = new Date(startDate);
-        if (!isNaN(parsedStart.getTime())) {
-          where.recordDate.gte = parsedStart;
-        }
+        const parsed = new Date(startDate);
+        if (!isNaN(parsed.getTime())) where.recordDate.gte = parsed;
       }
       if (endDate) {
-        const parsedEnd = new Date(endDate);
-        if (!isNaN(parsedEnd.getTime())) {
-          // Set to end of day
-          parsedEnd.setUTCHours(23, 59, 59, 999);
-          where.recordDate.lte = parsedEnd;
+        const parsed = new Date(endDate);
+        if (!isNaN(parsed.getTime())) {
+          parsed.setUTCHours(23, 59, 59, 999);
+          where.recordDate.lte = parsed;
         }
       }
     }
@@ -208,23 +126,15 @@ export const getMyHealthHistory = async (req, res) => {
       take: isNaN(take) ? 30 : take,
     });
 
-    return res.json({
-      success: true,
-      data: records,
-      message: 'Health history retrieved successfully',
-    });
+    return res.json({ success: true, data: records, message: 'Health history retrieved successfully' });
   } catch (error) {
-    console.error('Error fetching health history:', error);
-    return res.status(500).json({
-      success: false,
-      data: null,
-      message: 'Failed to fetch health history',
-    });
+    console.error('getMyHealthHistory error:', error);
+    return res.status(500).json({ success: false, data: null, message: 'Failed to fetch health history' });
   }
 };
 
 /**
- * Get current user's health summary — today's data, weekly average, monthly total, best day
+ * Get health summary: today, weekly average, monthly total, best day.
  * @route GET /api/health/summary
  */
 export const getHealthSummary = async (req, res) => {
@@ -232,69 +142,27 @@ export const getHealthSummary = async (req, res) => {
     const userId = req.user.id;
     const now = new Date();
 
-    // Today (UTC)
     const todayStart = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate()));
     const todayEnd = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate(), 23, 59, 59, 999));
 
-    // Start of current week (Monday)
     const dayOfWeek = now.getUTCDay();
     const mondayOffset = dayOfWeek === 0 ? 6 : dayOfWeek - 1;
     const weekStart = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate() - mondayOffset));
 
-    // Start of current month
     const monthStart = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), 1));
 
-    // Fetch all records in parallel
     const [todayRecords, weekRecords, monthRecords, bestDayRecord] = await Promise.all([
-      // Today's data
-      prisma.healthRecord.findMany({
-        where: {
-          userId,
-          recordDate: { gte: todayStart, lte: todayEnd },
-        },
-      }),
-      // This week's records (for weekly average)
-      prisma.healthRecord.findMany({
-        where: {
-          userId,
-          recordDate: { gte: weekStart, lte: todayEnd },
-        },
-      }),
-      // This month's records (for monthly total)
-      prisma.healthRecord.findMany({
-        where: {
-          userId,
-          recordDate: { gte: monthStart, lte: todayEnd },
-        },
-      }),
-      // Best day (most steps) — all time
-      prisma.healthRecord.findFirst({
-        where: { userId },
-        orderBy: { steps: 'desc' },
-      }),
+      prisma.healthRecord.findMany({ where: { userId, recordDate: { gte: todayStart, lte: todayEnd } } }),
+      prisma.healthRecord.findMany({ where: { userId, recordDate: { gte: weekStart, lte: todayEnd } } }),
+      prisma.healthRecord.findMany({ where: { userId, recordDate: { gte: monthStart, lte: todayEnd } } }),
+      prisma.healthRecord.findFirst({ where: { userId }, orderBy: { steps: 'desc' } }),
     ]);
 
-    // Aggregate today's data (could have multiple sources)
-    const today = {
-      steps: todayRecords.reduce((sum, r) => sum + (r.steps || 0), 0),
-      calories: todayRecords.reduce((sum, r) => sum + (r.calories || 0), 0),
-      distanceKm: todayRecords.reduce((sum, r) => sum + (r.distanceKm || 0), 0),
-      activeMinutes: todayRecords.reduce((sum, r) => sum + (r.activeMinutes || 0), 0),
-    };
+    const today = sumRecords(todayRecords);
 
-    // Aggregate by date for weekly average
     const weekByDate = aggregateByDate(weekRecords);
     const weekDaysWithData = Object.keys(weekByDate).length || 1;
-    const weekTotals = Object.values(weekByDate).reduce(
-      (acc, day) => ({
-        steps: acc.steps + day.steps,
-        calories: acc.calories + day.calories,
-        distanceKm: acc.distanceKm + day.distanceKm,
-        activeMinutes: acc.activeMinutes + day.activeMinutes,
-      }),
-      { steps: 0, calories: 0, distanceKm: 0, activeMinutes: 0 }
-    );
-
+    const weekTotals = sumAggregated(weekByDate);
     const weeklyAverage = {
       steps: Math.round(weekTotals.steps / weekDaysWithData),
       calories: Math.round(weekTotals.calories / weekDaysWithData),
@@ -303,21 +171,11 @@ export const getHealthSummary = async (req, res) => {
       daysWithData: weekDaysWithData,
     };
 
-    // Monthly total
     const monthByDate = aggregateByDate(monthRecords);
-    const monthlyTotal = Object.values(monthByDate).reduce(
-      (acc, day) => ({
-        steps: acc.steps + day.steps,
-        calories: acc.calories + day.calories,
-        distanceKm: acc.distanceKm + day.distanceKm,
-        activeMinutes: acc.activeMinutes + day.activeMinutes,
-      }),
-      { steps: 0, calories: 0, distanceKm: 0, activeMinutes: 0 }
-    );
+    const monthlyTotal = sumAggregated(monthByDate);
     monthlyTotal.distanceKm = parseFloat(monthlyTotal.distanceKm.toFixed(2));
     monthlyTotal.daysWithData = Object.keys(monthByDate).length;
 
-    // Best day
     const bestDay = bestDayRecord
       ? {
           date: bestDayRecord.recordDate,
@@ -331,26 +189,17 @@ export const getHealthSummary = async (req, res) => {
 
     return res.json({
       success: true,
-      data: {
-        today,
-        weeklyAverage,
-        monthlyTotal,
-        bestDay,
-      },
+      data: { today, weeklyAverage, monthlyTotal, bestDay },
       message: 'Health summary retrieved successfully',
     });
   } catch (error) {
-    console.error('Error fetching health summary:', error);
-    return res.status(500).json({
-      success: false,
-      data: null,
-      message: 'Failed to fetch health summary',
-    });
+    console.error('getHealthSummary error:', error);
+    return res.status(500).json({ success: false, data: null, message: 'Failed to fetch health summary' });
   }
 };
 
 /**
- * Get just today's health data
+ * Get today's aggregated health data.
  * @route GET /api/health/today
  */
 export const getTodayHealth = async (req, res) => {
@@ -362,216 +211,44 @@ export const getTodayHealth = async (req, res) => {
     const todayEnd = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate(), 23, 59, 59, 999));
 
     const records = await prisma.healthRecord.findMany({
-      where: {
-        userId,
-        recordDate: { gte: todayStart, lte: todayEnd },
-      },
+      where: { userId, recordDate: { gte: todayStart, lte: todayEnd } },
     });
 
-    // Aggregate across all sources for today
     const aggregated = {
-      steps: records.reduce((sum, r) => sum + (r.steps || 0), 0),
-      calories: records.reduce((sum, r) => sum + (r.calories || 0), 0),
-      distanceKm: records.reduce((sum, r) => sum + (r.distanceKm || 0), 0),
-      activeMinutes: records.reduce((sum, r) => sum + (r.activeMinutes || 0), 0),
+      ...sumRecords(records),
       sources: records.map((r) => r.source),
       date: todayStart.toISOString().split('T')[0],
     };
 
     return res.json({
       success: true,
-      data: {
-        aggregated,
-        records,
-      },
+      data: { aggregated, records },
       message: "Today's health data retrieved successfully",
     });
   } catch (error) {
-    console.error("Error fetching today's health:", error);
-    return res.status(500).json({
-      success: false,
-      data: null,
-      message: "Failed to fetch today's health data",
-    });
+    console.error('getTodayHealth error:', error);
+    return res.status(500).json({ success: false, data: null, message: "Failed to fetch today's health data" });
   }
 };
 
-/**
- * Sync health data via webhook (iOS Shortcuts)
- * @route POST /api/health/webhook
- */
-export const syncFromWebhook = async (req, res) => {
-  try {
-    const { syncToken, steps, distanceKm, calories, activeMinutes, source } = req.body;
+// ─── Private Helpers ──────────────────────────────────────────────────────────
 
-    if (!syncToken) {
-      return res.status(401).json({ success: false, message: 'Missing syncToken' });
-    }
+/** Sum raw health records into a single metrics object. */
+const sumRecords = (records) => ({
+  steps: records.reduce((sum, r) => sum + (r.steps || 0), 0),
+  calories: records.reduce((sum, r) => sum + (r.calories || 0), 0),
+  distanceKm: records.reduce((sum, r) => sum + (r.distanceKm || 0), 0),
+  activeMinutes: records.reduce((sum, r) => sum + (r.activeMinutes || 0), 0),
+});
 
-    const user = await prisma.user.findUnique({
-      where: { syncToken },
-    });
-
-    if (!user) {
-      return res.status(401).json({ success: false, message: 'Invalid syncToken' });
-    }
-
-    const now = new Date();
-    const normalizedDate = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate()));
-    const healthSource = source || 'APPLE_HEALTH';
-
-    const parseNumber = (val) => val ? Number(String(val).replace(/,/g, '')) : undefined;
-
-    const parsedSteps = parseNumber(steps);
-    const parsedCalories = parseNumber(calories);
-    const parsedDistanceKm = parseNumber(distanceKm);
-    const parsedActiveMinutes = parseNumber(activeMinutes);
-
-    // Calculate current streak dynamically
-    const pastRecords = await prisma.healthRecord.findMany({
-      where: { userId: user.id },
-      orderBy: { recordDate: 'desc' },
-      select: { recordDate: true }
-    });
-    
-    let currentStreak = 0;
-    const today = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate()));
-    const uniqueDates = [...new Set(pastRecords.map(r => r.recordDate.toISOString().split('T')[0]))];
-    
-    for (let i = 0; i < uniqueDates.length; i++) {
-      const d = new Date(uniqueDates[i]);
-      const diffTime = Math.abs(today - d);
-      const diffDays = Math.ceil(diffTime / (1000 * 60 * 60 * 24));
-      
-      if (diffDays === currentStreak || diffDays === currentStreak + 1) {
-        currentStreak = diffDays === currentStreak + 1 ? currentStreak + 1 : currentStreak;
-      } else if (diffDays > currentStreak + 1) {
-        break;
-      }
-    }
-
-    // --- Points Calculation Logic ---
-    const existingRecord = await prisma.healthRecord.findUnique({
-      where: {
-        userId_recordDate_source: {
-          userId: user.id,
-          recordDate: normalizedDate,
-          source: healthSource,
-        },
-      },
-    });
-
-    const oldMetrics = {
-      steps: existingRecord?.steps || 0,
-      calories: existingRecord?.calories || 0,
-      distanceKm: existingRecord?.distanceKm || 0
-    };
-
-    const newMetrics = {
-      steps: parsedSteps !== undefined ? parsedSteps : oldMetrics.steps,
-      calories: parsedCalories !== undefined ? parsedCalories : oldMetrics.calories,
-      distanceKm: parsedDistanceKm !== undefined ? parsedDistanceKm : oldMetrics.distanceKm
-    };
-
-    const deltaPoints = pointsService.calculatePointsDelta(oldMetrics, newMetrics, currentStreak);
-    // --------------------------------
-
-    let healthRecord;
-    if (deltaPoints !== 0) {
-      const [upsertedRecord, updatedUser] = await prisma.$transaction([
-        prisma.healthRecord.upsert({
-          where: {
-            userId_recordDate_source: {
-              userId: user.id,
-              recordDate: normalizedDate,
-              source: healthSource,
-            },
-          },
-          update: {
-            steps: parsedSteps !== undefined ? parsedSteps : undefined,
-            distanceKm: parsedDistanceKm !== undefined ? parsedDistanceKm : undefined,
-            calories: parsedCalories !== undefined ? parsedCalories : undefined,
-            activeMinutes: parsedActiveMinutes !== undefined ? parsedActiveMinutes : undefined,
-            createdAt: new Date(),
-          },
-          create: {
-            userId: user.id,
-            recordDate: normalizedDate,
-            source: healthSource,
-            steps: parsedSteps || 0,
-            distanceKm: parsedDistanceKm || 0,
-            calories: parsedCalories || 0,
-            activeMinutes: parsedActiveMinutes || 0,
-          },
-        }),
-        prisma.user.update({
-          where: { id: user.id },
-          data: {
-            totalPoints: {
-              increment: deltaPoints,
-            },
-          },
-        }),
-      ]);
-      healthRecord = upsertedRecord;
-    } else {
-      healthRecord = await prisma.healthRecord.upsert({
-        where: {
-          userId_recordDate_source: {
-            userId: user.id,
-            recordDate: normalizedDate,
-            source: healthSource,
-          },
-        },
-        update: {
-          steps: parsedSteps !== undefined ? parsedSteps : undefined,
-          distanceKm: parsedDistanceKm !== undefined ? parsedDistanceKm : undefined,
-          calories: parsedCalories !== undefined ? parsedCalories : undefined,
-          activeMinutes: parsedActiveMinutes !== undefined ? parsedActiveMinutes : undefined,
-          createdAt: new Date(),
-        },
-        create: {
-          userId: user.id,
-          recordDate: normalizedDate,
-          source: healthSource,
-          steps: parsedSteps || 0,
-          distanceKm: parsedDistanceKm || 0,
-          calories: parsedCalories || 0,
-          activeMinutes: parsedActiveMinutes || 0,
-        },
-      });
-    }
-
-    return res.status(200).json({
-      success: true,
-      data: healthRecord,
-      message: 'Health data synced via webhook successfully',
-    });
-  } catch (error) {
-    console.error('Error in webhook sync:', error);
-    return res.status(500).json({
-      success: false,
-      message: 'Failed to sync health data from webhook',
-    });
-  }
-};
-
-/**
- * Helper: aggregate health records by date (combining multiple sources per day)
- * @param {Array} records - Array of health records
- * @returns {Object} Records aggregated by date string
- */
-function aggregateByDate(records) {
-  const byDate = {};
-  for (const record of records) {
-    const dateKey = record.recordDate.toISOString().split('T')[0];
-    if (!byDate[dateKey]) {
-      byDate[dateKey] = { steps: 0, calories: 0, distanceKm: 0, activeMinutes: 0 };
-    }
-    byDate[dateKey].steps += record.steps || 0;
-    byDate[dateKey].calories += record.calories || 0;
-    byDate[dateKey].distanceKm += record.distanceKm || 0;
-    byDate[dateKey].activeMinutes += record.activeMinutes || 0;
-  }
-  return byDate;
-}
+/** Sum values from an aggregateByDate result. */
+const sumAggregated = (byDate) =>
+  Object.values(byDate).reduce(
+    (acc, day) => ({
+      steps: acc.steps + day.steps,
+      calories: acc.calories + day.calories,
+      distanceKm: acc.distanceKm + day.distanceKm,
+      activeMinutes: acc.activeMinutes + day.activeMinutes,
+    }),
+    { steps: 0, calories: 0, distanceKm: 0, activeMinutes: 0 }
+  );

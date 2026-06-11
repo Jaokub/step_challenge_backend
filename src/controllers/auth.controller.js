@@ -6,16 +6,7 @@ import {
   comparePassword,
   verifyRefreshToken,
 } from '../services/auth.service.js';
-
-/**
- * Strip sensitive fields from a user object before returning it.
- * @param {Object} user - The Prisma user record.
- * @returns {Object} User object without passwordHash.
- */
-function sanitizeUser(user) {
-  const { passwordHash, ...safeUser } = user;
-  return safeUser;
-}
+import { sanitizeUser } from '../services/userSanitizer.service.js';
 
 /**
  * POST /auth/register

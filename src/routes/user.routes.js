@@ -3,7 +3,6 @@ import { body } from 'express-validator';
 import {
   getProfile,
   updateProfile,
-  getLeaderboard,
   getAllUsers,
   searchUsers,
 } from '../controllers/user.controller.js';
@@ -11,13 +10,6 @@ import { authenticate, requireRole } from '../middleware/auth.js';
 import { validate } from '../middleware/validate.js';
 
 const router = Router();
-
-/**
- * GET /users/leaderboard
- * Get the points leaderboard. Requires authentication.
- * Must be defined before /users/profile/:id to avoid route conflicts.
- */
-router.get('/leaderboard', authenticate, getLeaderboard);
 
 /**
  * GET /users/profile/:id

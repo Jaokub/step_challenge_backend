@@ -1,14 +1,6 @@
 import prisma from '../config/prisma.js';
 
 /**
- * Strip sensitive fields from a user object before returning it.
- */
-function sanitizeUser(user) {
-  const { passwordHash, ...safeUser } = user;
-  return safeUser;
-}
-
-/**
  * @desc    Send a friend request or accept an existing one
  * @route   POST /api/v1/friends/request
  * @access  Private

@@ -1,14 +1,5 @@
 import prisma from '../config/prisma.js';
-
-/**
- * Strip sensitive fields from a user object before returning it.
- * @param {Object} user - The Prisma user record.
- * @returns {Object} User object without passwordHash.
- */
-function sanitizeUser(user) {
-  const { passwordHash, ...safeUser } = user;
-  return safeUser;
-}
+import { sanitizeUser } from '../services/userSanitizer.service.js';
 
 /**
  * GET /users/profile/:id
@@ -92,80 +83,6 @@ export async function updateProfile(req, res) {
     });
   } catch (error) {
     console.error('UpdateProfile error:', error);
-    return res.status(500).json({
-      success: false,
-      data: null,
-      message: 'Internal server error.',
-    });
-  }
-}
-
-/**
- * GET /users/leaderboard
- * Get users ranked by totalPoints with pagination.
- * Query params: limit (default 10), offset (default 0), type (global|friends).
- */
-export async function getLeaderboard(req, res) {
-  try {
-    const limit = Math.min(Math.max(parseInt(req.query.limit, 10) || 10, 1), 100);
-    const offset = Math.max(parseInt(req.query.offset, 10) || 0, 0);
-    const type = req.query.type === 'friends' ? 'friends' : 'global';
-    const userId = req.user.id;
-
-    let whereClause = {};
-
-    if (type === 'friends') {
-      // Find all accepted friends
-      const friendships = await prisma.friendship.findMany({
-        where: {
-          status: 'ACCEPTED',
-          OR: [{ userId }, { friendId: userId }],
-        },
-      });
-
-      const friendIds = friendships.map(f => (f.userId === userId ? f.friendId : f.userId));
-      friendIds.push(userId); // Include self
-
-      whereClause = { id: { in: friendIds } };
-    }
-
-    const [users, total] = await Promise.all([
-      prisma.user.findMany({
-        where: whereClause,
-        orderBy: { totalPoints: 'desc' },
-        skip: offset,
-        take: limit,
-        select: {
-          id: true,
-          fullName: true,
-          department: true,
-          avatarUrl: true,
-          totalPoints: true,
-        },
-      }),
-      prisma.user.count({ where: whereClause }),
-    ]);
-
-    // Add rank based on offset position
-    const rankedUsers = users.map((user, index) => ({
-      rank: offset + index + 1,
-      ...user,
-    }));
-
-    return res.status(200).json({
-      success: true,
-      data: {
-        leaderboard: rankedUsers,
-        pagination: {
-          total,
-          limit,
-          offset,
-        },
-      },
-      message: `${type === 'friends' ? 'Friends' : 'Global'} leaderboard retrieved successfully.`,
-    });
-  } catch (error) {
-    console.error('GetLeaderboard error:', error);
     return res.status(500).json({
       success: false,
       data: null,

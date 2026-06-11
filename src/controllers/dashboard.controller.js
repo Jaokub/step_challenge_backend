@@ -1,4 +1,5 @@
 import prisma from '../config/prisma.js';
+import { calculateCheckInStreak } from '../services/streak.service.js';
 
 /**
  * @desc    Get personal dashboard data for the current user
@@ -87,7 +88,7 @@ export const getPersonalDashboard = async (req, res) => {
       }),
 
       // Calculate streak: consecutive days with check-ins
-      calculateStreak(userId),
+      calculateCheckInStreak(userId),
     ]);
 
     const upcomingWithCount = upcomingActivities.map((a) => ({
@@ -293,51 +294,40 @@ export const getStats = async (req, res) => {
       statusCounts[item.status] = item._count.id;
     });
 
-    // Check-ins by month (last 6 months)
-    const checkInsByMonth = [];
-    for (let i = 5; i >= 0; i--) {
-      const monthStart = new Date(now.getFullYear(), now.getMonth() - i, 1);
-      const monthEnd = new Date(now.getFullYear(), now.getMonth() - i + 1, 1);
+    // Build month boundaries for the last 6 months
+    const monthRanges = Array.from({ length: 6 }, (_, i) => {
+      const monthStart = new Date(now.getFullYear(), now.getMonth() - (5 - i), 1);
+      const monthEnd = new Date(now.getFullYear(), now.getMonth() - (5 - i) + 1, 1);
+      return { monthStart, monthEnd };
+    });
 
-      const count = await prisma.checkIn.count({
-        where: {
-          checkedInAt: {
-            gte: monthStart,
-            lt: monthEnd,
-          },
-        },
-      });
+    // Run all 12 count queries in parallel instead of sequentially
+    const [checkInCounts, userCounts] = await Promise.all([
+      Promise.all(
+        monthRanges.map(({ monthStart, monthEnd }) =>
+          prisma.checkIn.count({ where: { checkedInAt: { gte: monthStart, lt: monthEnd } } })
+        )
+      ),
+      Promise.all(
+        monthRanges.map(({ monthStart, monthEnd }) =>
+          prisma.user.count({ where: { createdAt: { gte: monthStart, lt: monthEnd } } })
+        )
+      ),
+    ]);
 
-      checkInsByMonth.push({
-        year: monthStart.getFullYear(),
-        month: monthStart.getMonth() + 1,
-        monthName: monthStart.toLocaleString('en-US', { month: 'short' }),
-        count,
-      });
-    }
+    const checkInsByMonth = monthRanges.map(({ monthStart }, i) => ({
+      year: monthStart.getFullYear(),
+      month: monthStart.getMonth() + 1,
+      monthName: monthStart.toLocaleString('en-US', { month: 'short' }),
+      count: checkInCounts[i],
+    }));
 
-    // New users by month (last 6 months)
-    const newUsersByMonth = [];
-    for (let i = 5; i >= 0; i--) {
-      const monthStart = new Date(now.getFullYear(), now.getMonth() - i, 1);
-      const monthEnd = new Date(now.getFullYear(), now.getMonth() - i + 1, 1);
-
-      const count = await prisma.user.count({
-        where: {
-          createdAt: {
-            gte: monthStart,
-            lt: monthEnd,
-          },
-        },
-      });
-
-      newUsersByMonth.push({
-        year: monthStart.getFullYear(),
-        month: monthStart.getMonth() + 1,
-        monthName: monthStart.toLocaleString('en-US', { month: 'short' }),
-        count,
-      });
-    }
+    const newUsersByMonth = monthRanges.map(({ monthStart }, i) => ({
+      year: monthStart.getFullYear(),
+      month: monthStart.getMonth() + 1,
+      monthName: monthStart.toLocaleString('en-US', { month: 'short' }),
+      count: userCounts[i],
+    }));
 
     return res.status(200).json({
       success: true,
@@ -358,64 +348,3 @@ export const getStats = async (req, res) => {
   }
 };
 
-/**
- * Calculate the current check-in streak for a user.
- * A streak is the number of consecutive days (ending today or yesterday)
- * that the user has at least one check-in.
- *
- * @param {string} userId - The user's ID
- * @returns {Promise<number>} The current streak count
- */
-async function calculateStreak(userId) {
-  try {
-    // Get distinct check-in dates, ordered descending
-    const checkIns = await prisma.checkIn.findMany({
-      where: { userId },
-      orderBy: { checkedInAt: 'desc' },
-      select: { checkedInAt: true },
-    });
-
-    if (checkIns.length === 0) return 0;
-
-    // Extract unique dates (date strings only, no time)
-    const uniqueDates = [
-      ...new Set(
-        checkIns.map((ci) => {
-          const d = new Date(ci.checkedInAt);
-          return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
-        })
-      ),
-    ].sort((a, b) => b.localeCompare(a)); // descending
-
-    const today = new Date();
-    const todayStr = `${today.getFullYear()}-${String(today.getMonth() + 1).padStart(2, '0')}-${String(today.getDate()).padStart(2, '0')}`;
-
-    const yesterday = new Date(today);
-    yesterday.setDate(yesterday.getDate() - 1);
-    const yesterdayStr = `${yesterday.getFullYear()}-${String(yesterday.getMonth() + 1).padStart(2, '0')}-${String(yesterday.getDate()).padStart(2, '0')}`;
-
-    // Streak must start from today or yesterday
-    if (uniqueDates[0] !== todayStr && uniqueDates[0] !== yesterdayStr) {
-      return 0;
-    }
-
-    let streak = 1;
-    for (let i = 1; i < uniqueDates.length; i++) {
-      const prevDate = new Date(uniqueDates[i - 1]);
-      const currDate = new Date(uniqueDates[i]);
-      const diffMs = prevDate.getTime() - currDate.getTime();
-      const diffDays = Math.round(diffMs / (24 * 60 * 60 * 1000));
-
-      if (diffDays === 1) {
-        streak++;
-      } else {
-        break;
-      }
-    }
-
-    return streak;
-  } catch (error) {
-    console.error('calculateStreak error:', error);
-    return 0;
-  }
-}
