@@ -88,18 +88,21 @@ export const getFriendsLeaderboard = async (userId, startDate, endDate) => {
       }
     });
 
-    const pointsMap = new Map();
+    const metricsMap = new Map();
     healthRecords.forEach(hr => {
-      const metrics = {
+      metricsMap.set(hr.userId, {
         steps: hr._sum.steps || 0,
         calories: hr._sum.calories || 0,
         distanceKm: hr._sum.distanceKm || 0
-      };
-      pointsMap.set(hr.userId, calculateHealthPoints(metrics, 0));
+      });
     });
 
     friendsList.forEach(u => {
-      u.points = pointsMap.get(u.id) || 0;
+      const metrics = metricsMap.get(u.id) || { steps: 0, calories: 0, distanceKm: 0 };
+      u.steps = metrics.steps;
+      u.calories = metrics.calories;
+      u.distance = metrics.distanceKm;
+      u.points = calculateHealthPoints(metrics, 0);
     });
   } else {
     friendsList.forEach(u => {
@@ -153,18 +156,21 @@ export const getGroupLeaderboard = async (groupId, startDate, endDate) => {
       }
     });
 
-    const pointsMap = new Map();
+    const metricsMap = new Map();
     healthRecords.forEach(hr => {
-      const metrics = {
+      metricsMap.set(hr.userId, {
         steps: hr._sum.steps || 0,
         calories: hr._sum.calories || 0,
         distanceKm: hr._sum.distanceKm || 0
-      };
-      pointsMap.set(hr.userId, calculateHealthPoints(metrics, 0));
+      });
     });
 
     membersList.forEach(u => {
-      u.points = pointsMap.get(u.id) || 0;
+      const metrics = metricsMap.get(u.id) || { steps: 0, calories: 0, distanceKm: 0 };
+      u.steps = metrics.steps;
+      u.calories = metrics.calories;
+      u.distance = metrics.distanceKm;
+      u.points = calculateHealthPoints(metrics, 0);
     });
   } else {
     membersList.forEach(u => {
