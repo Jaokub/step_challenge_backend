@@ -8,6 +8,7 @@ import {
   getHealthSummary,
   getTodayHealth,
   syncFromWebhook,
+  getWeeklyChart,
 } from '../controllers/health.controller.js';
 
 const router = Router();
@@ -90,6 +91,13 @@ router.get('/summary', authenticate, getHealthSummary);
  * @access Private
  */
 router.get('/today', authenticate, getTodayHealth);
+
+/**
+ * @route GET /api/health/weekly-chart
+ * @desc Get weekly chart data (last 7 days)
+ * @access Private
+ */
+router.get('/weekly-chart', authenticate, getWeeklyChart);
 
 /**
  * @route POST /api/health/webhook

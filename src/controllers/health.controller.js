@@ -231,6 +231,57 @@ export const getTodayHealth = async (req, res) => {
   }
 };
 
+/**
+ * Get weekly chart data (last 7 days of steps).
+ * @route GET /api/health/weekly-chart
+ */
+export const getWeeklyChart = async (req, res) => {
+  try {
+    const userId = req.user.id;
+    const now = new Date();
+    
+    const todayEnd = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate(), 23, 59, 59, 999));
+    const sixDaysAgoStart = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate() - 6));
+
+    const records = await prisma.healthRecord.findMany({
+      where: {
+        userId,
+        recordDate: {
+          gte: sixDaysAgoStart,
+          lte: todayEnd,
+        },
+      },
+    });
+
+    const aggregated = aggregateByDate(records);
+    
+    const chartData = [];
+    const dayNames = ['อา', 'จ', 'อ', 'พ', 'พฤ', 'ศ', 'ส'];
+
+    for (let i = 6; i >= 0; i--) {
+      const d = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate() - i));
+      const dateStr = d.toISOString().split('T')[0];
+      const dayName = dayNames[d.getUTCDay()];
+      const dayData = aggregated[dateStr] || { steps: 0, calories: 0, distanceKm: 0, activeMinutes: 0 };
+      
+      chartData.push({
+        date: dateStr,
+        dayName,
+        steps: dayData.steps,
+      });
+    }
+
+    return res.json({
+      success: true,
+      data: chartData,
+      message: 'Weekly chart data retrieved successfully',
+    });
+  } catch (error) {
+    console.error('getWeeklyChart error:', error);
+    return res.status(500).json({ success: false, data: null, message: 'Failed to fetch weekly chart data' });
+  }
+};
+
 // ─── Private Helpers ──────────────────────────────────────────────────────────
 
 /** Sum raw health records into a single metrics object. */
