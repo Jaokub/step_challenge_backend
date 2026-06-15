@@ -256,7 +256,7 @@ export const getWeeklyChart = async (req, res) => {
     const aggregated = aggregateByDate(records);
     
     const chartData = [];
-    const dayNames = ['อา', 'จ', 'อ', 'พ', 'พฤ', 'ศ', 'ส'];
+    const dayNames = ['SU', 'MO', 'TU', 'WE', 'TH', 'FR', 'SA'];
 
     for (let i = 6; i >= 0; i--) {
       const d = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate() - i));
