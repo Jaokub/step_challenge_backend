@@ -1,5 +1,74 @@
 import prisma from '../config/prisma.js';
 import { calculateHealthPoints } from './points.service.js';
+import { calculateCheckInStreak } from './streak.service.js';
+
+/**
+ * Sum activity check-in points earned by a set of users within a date range.
+ * Mirrors how checkin.controller awards totalPoints (activity.points per check-in),
+ * so period-scoped leaderboards stay consistent with the all-time totalPoints view.
+ *
+ * @param {string[]} userIds
+ * @param {string} startDate
+ * @param {string} endDate
+ * @returns {Promise<Map<string, number>>} userId -> summed check-in points
+ */
+const getCheckInPointsByUser = async (userIds, startDate, endDate) => {
+  const checkIns = await prisma.checkIn.findMany({
+    where: {
+      userId: { in: userIds },
+      checkedInAt: { gte: new Date(startDate), lt: new Date(endDate) },
+    },
+    select: { userId: true, activity: { select: { points: true } } },
+  });
+
+  const pointsByUser = new Map();
+  checkIns.forEach((ci) => {
+    const prev = pointsByUser.get(ci.userId) || 0;
+    pointsByUser.set(ci.userId, prev + (ci.activity?.points || 0));
+  });
+  return pointsByUser;
+};
+
+/**
+ * Compute period-scoped points for a list of users: health points (using each
+ * user's current streak multiplier, same as a live sync would apply) plus any
+ * check-in points earned within the range.
+ *
+ * @param {Array<Object>} usersList - Users with .id (mutated in place with .steps/.calories/.distance/.points)
+ * @param {string} startDate
+ * @param {string} endDate
+ */
+const applyPeriodPoints = async (usersList, startDate, endDate) => {
+  const userIds = usersList.map((u) => u.id);
+
+  const [healthRecords, checkInPointsByUser, streaksByUser] = await Promise.all([
+    prisma.healthRecord.groupBy({
+      by: ['userId'],
+      where: { userId: { in: userIds }, recordDate: { gte: new Date(startDate), lt: new Date(endDate) } },
+      _sum: { steps: true, calories: true, distanceKm: true },
+    }),
+    getCheckInPointsByUser(userIds, startDate, endDate),
+    Promise.all(userIds.map(async (id) => [id, await calculateCheckInStreak(id)])).then((pairs) => new Map(pairs)),
+  ]);
+
+  const metricsMap = new Map();
+  healthRecords.forEach((hr) => {
+    metricsMap.set(hr.userId, {
+      steps: hr._sum.steps || 0,
+      calories: hr._sum.calories || 0,
+      distanceKm: hr._sum.distanceKm || 0,
+    });
+  });
+
+  usersList.forEach((u) => {
+    const metrics = metricsMap.get(u.id) || { steps: 0, calories: 0, distanceKm: 0 };
+    const streak = streaksByUser.get(u.id) || 0;
+    u.steps = metrics.steps;
+    u.calories = metrics.calories;
+    u.distance = metrics.distanceKm;
+    u.points = calculateHealthPoints(metrics, streak) + (checkInPointsByUser.get(u.id) || 0);
+  });
+};
 
 /**
  * @module LeaderboardService
@@ -69,41 +138,9 @@ export const getFriendsLeaderboard = async (userId, startDate, endDate) => {
   });
 
   const friendsList = Array.from(userMap.values());
-  
+
   if (startDate && endDate) {
-    const userIds = friendsList.map(u => u.id);
-    const healthRecords = await prisma.healthRecord.groupBy({
-      by: ['userId'],
-      where: {
-        userId: { in: userIds },
-        recordDate: {
-          gte: new Date(startDate),
-          lt: new Date(endDate)
-        }
-      },
-      _sum: {
-        steps: true,
-        calories: true,
-        distanceKm: true
-      }
-    });
-
-    const metricsMap = new Map();
-    healthRecords.forEach(hr => {
-      metricsMap.set(hr.userId, {
-        steps: hr._sum.steps || 0,
-        calories: hr._sum.calories || 0,
-        distanceKm: hr._sum.distanceKm || 0
-      });
-    });
-
-    friendsList.forEach(u => {
-      const metrics = metricsMap.get(u.id) || { steps: 0, calories: 0, distanceKm: 0 };
-      u.steps = metrics.steps;
-      u.calories = metrics.calories;
-      u.distance = metrics.distanceKm;
-      u.points = calculateHealthPoints(metrics, 0);
-    });
+    await applyPeriodPoints(friendsList, startDate, endDate);
   } else {
     friendsList.forEach(u => {
       u.points = u.totalPoints;
@@ -137,41 +174,9 @@ export const getGroupLeaderboard = async (groupId, startDate, endDate) => {
   });
 
   const membersList = groupMembers.map(member => member.user);
-  
+
   if (startDate && endDate) {
-    const userIds = membersList.map(u => u.id);
-    const healthRecords = await prisma.healthRecord.groupBy({
-      by: ['userId'],
-      where: {
-        userId: { in: userIds },
-        recordDate: {
-          gte: new Date(startDate),
-          lt: new Date(endDate)
-        }
-      },
-      _sum: {
-        steps: true,
-        calories: true,
-        distanceKm: true
-      }
-    });
-
-    const metricsMap = new Map();
-    healthRecords.forEach(hr => {
-      metricsMap.set(hr.userId, {
-        steps: hr._sum.steps || 0,
-        calories: hr._sum.calories || 0,
-        distanceKm: hr._sum.distanceKm || 0
-      });
-    });
-
-    membersList.forEach(u => {
-      const metrics = metricsMap.get(u.id) || { steps: 0, calories: 0, distanceKm: 0 };
-      u.steps = metrics.steps;
-      u.calories = metrics.calories;
-      u.distance = metrics.distanceKm;
-      u.points = calculateHealthPoints(metrics, 0);
-    });
+    await applyPeriodPoints(membersList, startDate, endDate);
   } else {
     membersList.forEach(u => {
       u.points = u.totalPoints;

@@ -1,5 +1,6 @@
 import { Router } from 'express';
 import { body, query } from 'express-validator';
+import rateLimit from 'express-rate-limit';
 import { authenticate } from '../middleware/auth.js';
 import { validate } from '../middleware/validate.js';
 import {
@@ -12,6 +13,19 @@ import {
 } from '../controllers/health.controller.js';
 
 const router = Router();
+
+// Public endpoint authenticated only by syncToken - throttle to slow down token-guessing.
+const webhookLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000,
+  max: 30,
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: {
+    success: false,
+    data: null,
+    message: 'Too many requests. Please try again later.',
+  },
+});
 
 /**
  * @route POST /api/health/sync
@@ -106,6 +120,7 @@ router.get('/weekly-chart', authenticate, getWeeklyChart);
  */
 router.post(
   '/webhook',
+  webhookLimiter,
   validate([
     body('syncToken').notEmpty().withMessage('syncToken is required'),
     body('steps').optional(),

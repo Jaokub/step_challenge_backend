@@ -14,8 +14,7 @@ const CONFIG = {
     7: 1.25, // 7-day streak = 25% bonus
     14: 1.5, // 14-day streak = 50% bonus
     30: 2.0  // 30-day streak = 100% bonus
-  },
-  ACTIVITY_CHECKIN_POINTS: 50 // Flat 50 points per event check-in
+  }
 };
 
 /**
@@ -48,14 +47,6 @@ export const calculateHealthPoints = (metrics, currentStreak = 0) => {
 };
 
 /**
- * Calculates points for checking into an activity
- * @returns {number} Points for activity check-in
- */
-export const getActivityCheckinPoints = () => {
-  return CONFIG.ACTIVITY_CHECKIN_POINTS;
-};
-
-/**
  * Helper to calculate the difference in points between two health metric states
  * Useful for upserting daily health data without overcounting
  */
@@ -67,7 +58,6 @@ export const calculatePointsDelta = (oldMetrics, newMetrics, currentStreak = 0) 
 
 export default {
   calculateHealthPoints,
-  getActivityCheckinPoints,
   calculatePointsDelta,
   CONFIG
 };

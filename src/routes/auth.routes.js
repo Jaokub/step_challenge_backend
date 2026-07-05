@@ -1,10 +1,24 @@
 import { Router } from 'express';
 import { body } from 'express-validator';
+import rateLimit from 'express-rate-limit';
 import { register, login, refreshToken, getMe, changePassword } from '../controllers/auth.controller.js';
 import { authenticate } from '../middleware/auth.js';
 import { validate } from '../middleware/validate.js';
 
 const router = Router();
+
+// Throttle credential-guessing endpoints: 10 attempts per IP per 15 minutes.
+const authLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000,
+  max: 10,
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: {
+    success: false,
+    data: null,
+    message: 'Too many attempts. Please try again later.',
+  },
+});
 
 /**
  * POST /auth/register
@@ -12,6 +26,7 @@ const router = Router();
  */
 router.post(
   '/register',
+  authLimiter,
   validate([
     body('email')
       .isEmail()
@@ -40,6 +55,7 @@ router.post(
  */
 router.post(
   '/login',
+  authLimiter,
   validate([
     body('email')
       .isEmail()
@@ -58,6 +74,7 @@ router.post(
  */
 router.post(
   '/refresh-token',
+  authLimiter,
   validate([
     body('refreshToken')
       .notEmpty()

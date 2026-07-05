@@ -1,5 +1,7 @@
 import prisma from '../config/prisma.js';
 
+class ActivityFullError extends Error {}
+
 /**
  * @desc    Check in to an activity by scanning its QR code
  * @route   POST /api/checkins/qr
@@ -11,14 +13,7 @@ export const checkInByQR = async (req, res) => {
     const userId = req.user.id;
 
     // Find activity by QR code
-    const activity = await prisma.activity.findUnique({
-      where: { qrCode },
-      include: {
-        _count: {
-          select: { checkIns: true },
-        },
-      },
-    });
+    const activity = await prisma.activity.findUnique({ where: { qrCode } });
 
     if (!activity) {
       return res.status(404).json({
@@ -55,52 +50,72 @@ export const checkInByQR = async (req, res) => {
       });
     }
 
-    // Check if activity is full
-    if (activity.maxParticipants && activity._count.checkIns >= activity.maxParticipants) {
-      return res.status(400).json({
-        success: false,
-        data: null,
-        message: 'Activity is full. No more check-ins allowed.',
-      });
-    }
+    // Re-check capacity and create the check-in inside a Serializable transaction so
+    // concurrent check-ins for the same activity can't both slip past the capacity check.
+    let checkIn;
+    try {
+      checkIn = await prisma.$transaction(
+        async (tx) => {
+          if (activity.maxParticipants) {
+            const count = await tx.checkIn.count({ where: { activityId: activity.id } });
+            if (count >= activity.maxParticipants) {
+              throw new ActivityFullError();
+            }
+          }
 
-    // Create check-in and award points in a transaction
-    const [checkIn] = await prisma.$transaction([
-      prisma.checkIn.create({
-        data: {
-          userId,
-          activityId: activity.id,
-          latitude: latitude ? parseFloat(latitude) : null,
-          longitude: longitude ? parseFloat(longitude) : null,
-          method: 'QR',
-        },
-        include: {
-          activity: {
-            select: {
-              id: true,
-              title: true,
-              location: true,
-              startDate: true,
-              endDate: true,
-              points: true,
-              status: true,
+          const created = await tx.checkIn.create({
+            data: {
+              userId,
+              activityId: activity.id,
+              latitude: latitude ? parseFloat(latitude) : null,
+              longitude: longitude ? parseFloat(longitude) : null,
+              method: 'QR',
             },
-          },
-          user: {
-            select: { id: true, fullName: true, totalPoints: true },
-          },
+            include: {
+              activity: {
+                select: {
+                  id: true,
+                  title: true,
+                  location: true,
+                  startDate: true,
+                  endDate: true,
+                  points: true,
+                  status: true,
+                },
+              },
+              user: {
+                select: { id: true, fullName: true, totalPoints: true },
+              },
+            },
+          });
+
+          await tx.user.update({
+            where: { id: userId },
+            data: { totalPoints: { increment: activity.points || 0 } },
+          });
+
+          return created;
         },
-      }),
-      // Award points to the user
-      prisma.user.update({
-        where: { id: userId },
-        data: {
-          totalPoints: {
-            increment: activity.points || 0,
-          },
-        },
-      }),
-    ]);
+        { isolationLevel: 'Serializable' }
+      );
+    } catch (txError) {
+      if (txError instanceof ActivityFullError) {
+        return res.status(400).json({
+          success: false,
+          data: null,
+          message: 'Activity is full. No more check-ins allowed.',
+        });
+      }
+      // Postgres serialization failure: another concurrent check-in won the race.
+      if (txError.code === 'P2034') {
+        return res.status(409).json({
+          success: false,
+          data: null,
+          message: 'Please try again — a conflicting check-in was just processed.',
+        });
+      }
+      throw txError;
+    }
 
     return res.status(201).json({
       success: true,

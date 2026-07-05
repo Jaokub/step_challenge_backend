@@ -31,8 +31,20 @@ const PORT = process.env.PORT || 3000;
 // ─── Global Middleware ───────────────────────────────────────────────────────
 
 app.use(helmet());
+
+const allowedOrigins = (process.env.CORS_ORIGIN || '')
+  .split(',')
+  .map((origin) => origin.trim())
+  .filter(Boolean);
+
 app.use(cors({
-  origin: true,
+  origin(origin, callback) {
+    // Allow non-browser clients (mobile apps, curl, server-to-server) which send no Origin header.
+    if (!origin || allowedOrigins.length === 0 || allowedOrigins.includes(origin)) {
+      return callback(null, true);
+    }
+    return callback(new Error('Not allowed by CORS'));
+  },
   credentials: true,
 }));
 app.use(compression());
