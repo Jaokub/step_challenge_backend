@@ -1,19 +1,28 @@
 import prisma from '../config/prisma.js';
 import { syncHealthRecord, aggregateByDate } from '../services/healthSync.service.js';
 import { parseHealthNumber } from '../services/healthSync.service.js';
+import {
+  thaiDayTag,
+  thaiDayTagEnd,
+  thaiWeekStartTag,
+  thaiMonthStartTag,
+  addDays,
+  tagToDateString,
+  tagWeekday,
+} from '../utils/thaiTime.js';
 
 const VALID_SOURCES = ['GOOGLE_HEALTH', 'APPLE_HEALTH', 'MANUAL'];
 
 /**
- * Normalise a date string to a UTC midnight Date object.
+ * Normalise a client-supplied date string to the UTC-midnight tag of its Thai
+ * calendar day (the `@db.Date` storage convention for recordDate).
  * @param {string} dateStr
  * @returns {{ date: Date|null, error: string|null }}
  */
 const normaliseDate = (dateStr) => {
   const parsed = new Date(dateStr);
   if (isNaN(parsed.getTime())) return { date: null, error: 'Invalid recordDate format' };
-  const date = new Date(Date.UTC(parsed.getUTCFullYear(), parsed.getUTCMonth(), parsed.getUTCDate()));
-  return { date, error: null };
+  return { date: thaiDayTag(parsed), error: null };
 };
 
 /**
@@ -70,8 +79,7 @@ export const syncFromWebhook = async (req, res) => {
       return res.status(401).json({ success: false, message: 'Invalid syncToken' });
     }
 
-    const now = new Date();
-    const normalizedDate = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate()));
+    const normalizedDate = thaiDayTag();
     const healthSource = source || 'APPLE_HEALTH';
 
     const healthRecord = await syncHealthRecord(user.id, normalizedDate, healthSource, {
@@ -107,14 +115,11 @@ export const getMyHealthHistory = async (req, res) => {
       where.recordDate = {};
       if (startDate) {
         const parsed = new Date(startDate);
-        if (!isNaN(parsed.getTime())) where.recordDate.gte = parsed;
+        if (!isNaN(parsed.getTime())) where.recordDate.gte = thaiDayTag(parsed);
       }
       if (endDate) {
         const parsed = new Date(endDate);
-        if (!isNaN(parsed.getTime())) {
-          parsed.setUTCHours(23, 59, 59, 999);
-          where.recordDate.lte = parsed;
-        }
+        if (!isNaN(parsed.getTime())) where.recordDate.lte = thaiDayTagEnd(parsed);
       }
     }
 
@@ -140,16 +145,11 @@ export const getMyHealthHistory = async (req, res) => {
 export const getHealthSummary = async (req, res) => {
   try {
     const userId = req.user.id;
-    const now = new Date();
 
-    const todayStart = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate()));
-    const todayEnd = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate(), 23, 59, 59, 999));
-
-    const dayOfWeek = now.getUTCDay();
-    const mondayOffset = dayOfWeek === 0 ? 6 : dayOfWeek - 1;
-    const weekStart = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate() - mondayOffset));
-
-    const monthStart = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), 1));
+    const todayStart = thaiDayTag();
+    const todayEnd = thaiDayTagEnd();
+    const weekStart = thaiWeekStartTag();
+    const monthStart = thaiMonthStartTag();
 
     const [todayRecords, weekRecords, monthRecords, bestDayRecord] = await Promise.all([
       prisma.healthRecord.findMany({ where: { userId, recordDate: { gte: todayStart, lte: todayEnd } } }),
@@ -205,10 +205,9 @@ export const getHealthSummary = async (req, res) => {
 export const getTodayHealth = async (req, res) => {
   try {
     const userId = req.user.id;
-    const now = new Date();
 
-    const todayStart = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate()));
-    const todayEnd = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate(), 23, 59, 59, 999));
+    const todayStart = thaiDayTag();
+    const todayEnd = thaiDayTagEnd();
 
     const records = await prisma.healthRecord.findMany({
       where: { userId, recordDate: { gte: todayStart, lte: todayEnd } },
@@ -217,7 +216,7 @@ export const getTodayHealth = async (req, res) => {
     const aggregated = {
       ...sumRecords(records),
       sources: records.map((r) => r.source),
-      date: todayStart.toISOString().split('T')[0],
+      date: tagToDateString(todayStart),
     };
 
     return res.json({
@@ -238,10 +237,10 @@ export const getTodayHealth = async (req, res) => {
 export const getWeeklyChart = async (req, res) => {
   try {
     const userId = req.user.id;
-    const now = new Date();
-    
-    const todayEnd = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate(), 23, 59, 59, 999));
-    const sixDaysAgoStart = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate() - 6));
+
+    const todayTag = thaiDayTag();
+    const todayEnd = thaiDayTagEnd();
+    const sixDaysAgoStart = addDays(todayTag, -6);
 
     const records = await prisma.healthRecord.findMany({
       where: {
@@ -254,14 +253,14 @@ export const getWeeklyChart = async (req, res) => {
     });
 
     const aggregated = aggregateByDate(records);
-    
+
     const chartData = [];
     const dayNames = ['SU', 'MO', 'TU', 'WE', 'TH', 'FR', 'SA'];
 
     for (let i = 6; i >= 0; i--) {
-      const d = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate() - i));
-      const dateStr = d.toISOString().split('T')[0];
-      const dayName = dayNames[d.getUTCDay()];
+      const d = addDays(todayTag, -i);
+      const dateStr = tagToDateString(d);
+      const dayName = dayNames[tagWeekday(d)];
       const dayData = aggregated[dateStr] || { steps: 0, calories: 0, distanceKm: 0, activeMinutes: 0 };
       
       chartData.push({

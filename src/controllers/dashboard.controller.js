@@ -1,5 +1,6 @@
 import prisma from '../config/prisma.js';
 import { calculateCheckInStreak } from '../services/streak.service.js';
+import { thaiDayTag, thaiDayTagEnd, thaiMonthStartInstant, thaiParts } from '../utils/thaiTime.js';
 
 /**
  * @desc    Get personal dashboard data for the current user
@@ -10,8 +11,8 @@ export const getPersonalDashboard = async (req, res) => {
   try {
     const userId = req.user.id;
     const now = new Date();
-    const todayStart = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate()));
-    const todayEnd = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate(), 23, 59, 59, 999));
+    const todayStart = thaiDayTag();
+    const todayEnd = thaiDayTagEnd();
 
     const [
       user,
@@ -138,8 +139,7 @@ export const getPersonalDashboard = async (req, res) => {
  */
 export const getAdminDashboard = async (req, res) => {
   try {
-    const now = new Date();
-    const monthStart = new Date(now.getFullYear(), now.getMonth(), 1);
+    const monthStart = thaiMonthStartInstant();
 
     const [
       totalUsers,
@@ -294,11 +294,16 @@ export const getStats = async (req, res) => {
       statusCounts[item.status] = item._count.id;
     });
 
-    // Build month boundaries for the last 6 months
+    // Build Thai-month boundaries (as real UTC instants) for the last 6 months.
+    // Labels are derived from a UTC-midnight tag of the Thai month so they stay
+    // correct regardless of the host machine's timezone.
+    const { year: thaiYear, month: thaiMonth } = thaiParts(now);
     const monthRanges = Array.from({ length: 6 }, (_, i) => {
-      const monthStart = new Date(now.getFullYear(), now.getMonth() - (5 - i), 1);
-      const monthEnd = new Date(now.getFullYear(), now.getMonth() - (5 - i) + 1, 1);
-      return { monthStart, monthEnd };
+      const monthsAgo = 5 - i;
+      const monthStart = thaiMonthStartInstant(now, monthsAgo);
+      const monthEnd = thaiMonthStartInstant(now, monthsAgo - 1);
+      const labelTag = new Date(Date.UTC(thaiYear, thaiMonth - monthsAgo, 1));
+      return { monthStart, monthEnd, labelTag };
     });
 
     // Run all 12 count queries in parallel instead of sequentially
@@ -315,17 +320,17 @@ export const getStats = async (req, res) => {
       ),
     ]);
 
-    const checkInsByMonth = monthRanges.map(({ monthStart }, i) => ({
-      year: monthStart.getFullYear(),
-      month: monthStart.getMonth() + 1,
-      monthName: monthStart.toLocaleString('en-US', { month: 'short' }),
+    const checkInsByMonth = monthRanges.map(({ labelTag }, i) => ({
+      year: labelTag.getUTCFullYear(),
+      month: labelTag.getUTCMonth() + 1,
+      monthName: labelTag.toLocaleString('en-US', { month: 'short', timeZone: 'UTC' }),
       count: checkInCounts[i],
     }));
 
-    const newUsersByMonth = monthRanges.map(({ monthStart }, i) => ({
-      year: monthStart.getFullYear(),
-      month: monthStart.getMonth() + 1,
-      monthName: monthStart.toLocaleString('en-US', { month: 'short' }),
+    const newUsersByMonth = monthRanges.map(({ labelTag }, i) => ({
+      year: labelTag.getUTCFullYear(),
+      month: labelTag.getUTCMonth() + 1,
+      monthName: labelTag.toLocaleString('en-US', { month: 'short', timeZone: 'UTC' }),
       count: userCounts[i],
     }));
 

@@ -4,11 +4,12 @@
  * Streak is based on check-in dates (not health records) and must end today or yesterday.
  */
 import prisma from '../config/prisma.js';
+import { thaiDateString, thaiDayTag, addDays, tagToDateString } from '../utils/thaiTime.js';
 
 /**
  * Calculate the current check-in streak for a user.
- * A streak is the number of consecutive days (ending today or yesterday)
- * that the user has at least one check-in.
+ * A streak is the number of consecutive Thai calendar days (ending today or
+ * yesterday, Bangkok time) that the user has at least one check-in.
  *
  * @param {string} userId - The user's ID.
  * @returns {Promise<number>} The current streak count (0 if no streak).
@@ -28,34 +29,26 @@ export const calculateCheckInStreak = async (userId) => {
 };
 
 /**
- * Extract unique date strings (YYYY-MM-DD) from an array of Date objects,
+ * Extract unique Thai-day strings (YYYY-MM-DD) from an array of Date objects,
  * sorted descending.
  *
  * @param {Date[]} dates
  * @returns {string[]}
  */
-const getUniqueDateStrings = (dates) => {
-  const toDateStr = (d) => {
-    const date = new Date(d);
-    return `${date.getUTCFullYear()}-${String(date.getUTCMonth() + 1).padStart(2, '0')}-${String(date.getUTCDate()).padStart(2, '0')}`;
-  };
-
-  return [...new Set(dates.map(toDateStr))].sort((a, b) => b.localeCompare(a));
-};
+const getUniqueDateStrings = (dates) =>
+  [...new Set(dates.map(thaiDateString))].sort((a, b) => b.localeCompare(a));
 
 /**
- * Count consecutive days from a sorted-descending list of date strings.
- * The streak must start from today or yesterday to be valid.
+ * Count consecutive days from a sorted-descending list of Thai-day strings.
+ * The streak must start from today or yesterday (Bangkok time) to be valid.
  *
  * @param {string[]} uniqueDates - Sorted descending YYYY-MM-DD strings.
  * @returns {number}
  */
 const countConsecutiveDays = (uniqueDates) => {
-  const now = new Date();
-  const todayStr = toUTCDateStr(now);
-
-  const yesterday = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate() - 1));
-  const yesterdayStr = toUTCDateStr(yesterday);
+  const todayTag = thaiDayTag();
+  const todayStr = tagToDateString(todayTag);
+  const yesterdayStr = tagToDateString(addDays(todayTag, -1));
 
   // Streak must be active (ending today or yesterday)
   if (uniqueDates[0] !== todayStr && uniqueDates[0] !== yesterdayStr) return 0;
@@ -75,14 +68,5 @@ const countConsecutiveDays = (uniqueDates) => {
 
   return streak;
 };
-
-/**
- * Format a Date as a UTC YYYY-MM-DD string.
- * Uses UTC methods to stay consistent with how dates are stored in the database.
- * @param {Date} date
- * @returns {string}
- */
-const toUTCDateStr = (date) =>
-  `${date.getUTCFullYear()}-${String(date.getUTCMonth() + 1).padStart(2, '0')}-${String(date.getUTCDate()).padStart(2, '0')}`;
 
 export default { calculateCheckInStreak };
