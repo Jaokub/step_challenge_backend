@@ -32,18 +32,38 @@ const PORT = process.env.PORT || 3000;
 
 app.use(helmet());
 
-const allowedOrigins = (process.env.CORS_ORIGIN || '')
+// Browser origins allowed to call this API. Extra origins can be configured via
+// the CORS_ORIGIN env var (comma-separated); the production frontend and local
+// dev origins are always allowed so a missing/misconfigured env var can't lock
+// legitimate clients out.
+const defaultOrigins = [
+  'https://step-challenge-frontend.vercel.app', // production web frontend
+  'http://localhost:3000',
+  'http://localhost:8081',
+  'http://localhost:19006', // Expo web dev server
+];
+
+const configuredOrigins = (process.env.CORS_ORIGIN || '')
   .split(',')
   .map((origin) => origin.trim())
   .filter(Boolean);
 
+const allowedOrigins = [...new Set([...defaultOrigins, ...configuredOrigins])];
+
+// Vercel gives each preview deployment of the frontend a unique subdomain
+// (e.g. step-challenge-frontend-git-branch-user.vercel.app), so match those too.
+const previewOriginPattern = /^https:\/\/step-challenge-frontend[\w-]*\.vercel\.app$/;
+
+const isAllowedOrigin = (origin) =>
+  allowedOrigins.includes(origin) || previewOriginPattern.test(origin);
+
 app.use(cors({
   origin(origin, callback) {
-    // Allow non-browser clients (mobile apps, curl, server-to-server) which send no Origin header.
-    if (!origin || allowedOrigins.length === 0 || allowedOrigins.includes(origin)) {
+    // Non-browser clients (mobile app, curl, server-to-server) send no Origin header.
+    if (!origin || isAllowedOrigin(origin)) {
       return callback(null, true);
     }
-    return callback(new Error('Not allowed by CORS'));
+    return callback(new Error(`Origin ${origin} not allowed by CORS`));
   },
   credentials: true,
 }));
