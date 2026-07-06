@@ -99,6 +99,8 @@ model Activity {
   maxParticipants Int?
   imageUrl        String?
   points          Int            @default(10)
+  expectedSteps   Int?           // Target step count for this activity (optional)
+  totalDistance   Float?         // Target distance in km for this activity (optional)
   createdAt       DateTime       @default(now())
   updatedAt       DateTime       @updatedAt
 

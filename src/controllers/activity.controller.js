@@ -183,7 +183,38 @@ export const createActivity = async (req, res) => {
       maxParticipants,
       imageUrl,
       points,
+      expectedSteps,
+      totalDistance,
     } = req.body;
+
+    // Validate required fields
+    if (!title || !location || !startDate || !endDate) {
+      return res.status(400).json({
+        success: false,
+        data: null,
+        message: 'title, location, startDate and endDate are required',
+      });
+    }
+
+    // At least one target (expected steps or total distance) must be provided
+    const hasSteps = expectedSteps !== undefined && expectedSteps !== null && expectedSteps !== '';
+    const hasDistance = totalDistance !== undefined && totalDistance !== null && totalDistance !== '';
+    if (!hasSteps && !hasDistance) {
+      return res.status(400).json({
+        success: false,
+        data: null,
+        message: 'Provide at least one target: expectedSteps or totalDistance',
+      });
+    }
+
+    // endDate must not be before startDate
+    if (new Date(endDate) < new Date(startDate)) {
+      return res.status(400).json({
+        success: false,
+        data: null,
+        message: 'endDate cannot be before startDate',
+      });
+    }
 
     // Generate a unique QR code
     const qrCode = uuidv4();
@@ -191,8 +222,8 @@ export const createActivity = async (req, res) => {
     const activity = await prisma.activity.create({
       data: {
         title,
-        description: description || null,
-        location: location || null,
+        description: description || '',
+        location,
         startDate: new Date(startDate),
         endDate: new Date(endDate),
         qrCode,
@@ -201,6 +232,8 @@ export const createActivity = async (req, res) => {
         maxParticipants: maxParticipants ? parseInt(maxParticipants, 10) : null,
         imageUrl: imageUrl || null,
         points: points ? parseInt(points, 10) : 0,
+        expectedSteps: hasSteps ? parseInt(expectedSteps, 10) : null,
+        totalDistance: hasDistance ? parseFloat(totalDistance) : null,
       },
       include: {
         createdBy: {
@@ -249,6 +282,8 @@ export const updateActivity = async (req, res) => {
       maxParticipants,
       imageUrl,
       points,
+      expectedSteps,
+      totalDistance,
     } = req.body;
 
     // Check if activity exists
@@ -281,6 +316,8 @@ export const updateActivity = async (req, res) => {
     if (maxParticipants !== undefined) updateData.maxParticipants = maxParticipants ? parseInt(maxParticipants, 10) : null;
     if (imageUrl !== undefined) updateData.imageUrl = imageUrl;
     if (points !== undefined) updateData.points = parseInt(points, 10);
+    if (expectedSteps !== undefined) updateData.expectedSteps = (expectedSteps === null || expectedSteps === '') ? null : parseInt(expectedSteps, 10);
+    if (totalDistance !== undefined) updateData.totalDistance = (totalDistance === null || totalDistance === '') ? null : parseFloat(totalDistance);
 
     const activity = await prisma.activity.update({
       where: { id },
