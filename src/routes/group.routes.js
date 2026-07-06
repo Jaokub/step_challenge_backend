@@ -1,6 +1,7 @@
 import { Router } from 'express';
 import { body } from 'express-validator';
 import { authenticate } from '../middleware/auth.js';
+import { requireGroupMember } from '../middleware/groupAuth.js';
 import { validate } from '../middleware/validate.js';
 import {
   getGroups,
@@ -70,48 +71,77 @@ router.post(
  * @desc Get group details with members list
  * @access Private
  */
-router.get('/:id', authenticate, getGroupById);
+router.get('/:id', authenticate, requireGroupMember(), getGroupById);
 
 /**
  * @route PUT /api/groups/:id
  * @desc Update group name/description
  * @access Private (OWNER/ADMIN only)
  */
-router.put('/:id', authenticate, updateGroup);
+router.put(
+  '/:id',
+  authenticate,
+  requireGroupMember({
+    roles: ['OWNER', 'ADMIN'],
+    roleMessage: 'Only group owners and admins can update group details',
+  }),
+  updateGroup
+);
 
 /**
  * @route DELETE /api/groups/:id
  * @desc Delete a group
  * @access Private (OWNER only)
  */
-router.delete('/:id', authenticate, deleteGroup);
+router.delete(
+  '/:id',
+  authenticate,
+  requireGroupMember({
+    roles: ['OWNER'],
+    roleMessage: 'Only the group owner can delete the group',
+  }),
+  deleteGroup
+);
 
 /**
  * @route DELETE /api/groups/:id/members/:userId
  * @desc Remove a member from a group
  * @access Private (OWNER/ADMIN only)
  */
-router.delete('/:id/members/:userId', authenticate, removeMember);
+router.delete(
+  '/:id/members/:userId',
+  authenticate,
+  requireGroupMember({
+    roles: ['OWNER', 'ADMIN'],
+    roleMessage: 'Only group owners and admins can remove members',
+  }),
+  removeMember
+);
 
 /**
  * @route GET /api/groups/:id/members
  * @desc List all members of a group
  * @access Private
  */
-router.get('/:id/members', authenticate, getGroupMembers);
+router.get('/:id/members', authenticate, requireGroupMember(), getGroupMembers);
 
 /**
  * @route GET /api/groups/:id/qrcode
  * @desc Generate and return QR code for group invite
  * @access Private
  */
-router.get('/:id/qrcode', authenticate, getGroupQRCode);
+router.get('/:id/qrcode', authenticate, requireGroupMember(), getGroupQRCode);
 
 /**
  * @route POST /api/groups/:id/leave
  * @desc Leave a group
  * @access Private
  */
-router.post('/:id/leave', authenticate, leaveGroup);
+router.post(
+  '/:id/leave',
+  authenticate,
+  requireGroupMember({ notMemberStatus: 404 }),
+  leaveGroup
+);
 
 export default router;

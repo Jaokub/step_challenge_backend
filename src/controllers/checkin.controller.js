@@ -1,4 +1,6 @@
 import prisma from '../config/prisma.js';
+import { applyPoints } from '../services/pointsLedger.service.js';
+import { thaiDayTag } from '../utils/thaiTime.js';
 
 class ActivityFullError extends Error {}
 
@@ -89,9 +91,12 @@ export const checkInByQR = async (req, res) => {
             },
           });
 
-          await tx.user.update({
-            where: { id: userId },
-            data: { totalPoints: { increment: activity.points || 0 } },
+          await applyPoints(tx, {
+            userId,
+            amount: activity.points || 0,
+            reason: 'ACTIVITY_CHECKIN',
+            effectiveDate: thaiDayTag(),
+            refId: activity.id,
           });
 
           return created;
@@ -213,6 +218,11 @@ export const getCheckInHistory = async (req, res) => {
 export const getActivityCheckIns = async (req, res) => {
   try {
     const { activityId } = req.params;
+    const { page = 1, limit = 50 } = req.query;
+
+    const pageNum = Math.max(1, parseInt(page, 10) || 1);
+    const limitNum = Math.min(200, Math.max(1, parseInt(limit, 10) || 50));
+    const skip = (pageNum - 1) * limitNum;
 
     // Verify activity exists
     const activity = await prisma.activity.findUnique({
@@ -228,28 +238,39 @@ export const getActivityCheckIns = async (req, res) => {
       });
     }
 
-    const checkIns = await prisma.checkIn.findMany({
-      where: { activityId },
-      orderBy: { checkedInAt: 'desc' },
-      include: {
-        user: {
-          select: {
-            id: true,
-            fullName: true,
-            email: true,
-            department: true,
-            avatarUrl: true,
+    const [checkIns, total] = await Promise.all([
+      prisma.checkIn.findMany({
+        where: { activityId },
+        skip,
+        take: limitNum,
+        orderBy: { checkedInAt: 'desc' },
+        include: {
+          user: {
+            select: {
+              id: true,
+              fullName: true,
+              email: true,
+              department: true,
+              avatarUrl: true,
+            },
           },
         },
-      },
-    });
+      }),
+      prisma.checkIn.count({ where: { activityId } }),
+    ]);
 
     return res.status(200).json({
       success: true,
       data: {
         activity,
         checkIns,
-        totalCheckIns: checkIns.length,
+        totalCheckIns: total,
+        pagination: {
+          page: pageNum,
+          limit: limitNum,
+          total,
+          totalPages: Math.ceil(total / limitNum),
+        },
       },
       message: 'Activity check-ins retrieved successfully',
     });
@@ -316,21 +337,19 @@ export const cancelCheckIn = async (req, res) => {
       });
     }
 
-    // Delete the check-in and deduct points in a transaction
-    await prisma.$transaction([
-      prisma.checkIn.delete({
-        where: { id },
-      }),
-      // Deduct the points that were awarded
-      prisma.user.update({
-        where: { id: userId },
-        data: {
-          totalPoints: {
-            decrement: checkIn.activity.points || 0,
-          },
-        },
-      }),
-    ]);
+    // Delete the check-in and reverse the awarded points in one transaction.
+    // The reversal is dated to the day the points were originally earned so
+    // period leaderboards for that day net out to zero.
+    await prisma.$transaction(async (tx) => {
+      await tx.checkIn.delete({ where: { id } });
+      await applyPoints(tx, {
+        userId,
+        amount: -(checkIn.activity.points || 0),
+        reason: 'CHECKIN_CANCELLED',
+        effectiveDate: thaiDayTag(checkIn.checkedInAt),
+        refId: checkIn.activity.id,
+      });
+    });
 
     return res.status(200).json({
       success: true,

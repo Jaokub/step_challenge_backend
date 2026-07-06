@@ -47,6 +47,13 @@ enum HealthSource {
   MANUAL
 }
 
+enum PointsReason {
+  HEALTH_SYNC
+  ACTIVITY_CHECKIN
+  CHECKIN_CANCELLED
+  ADJUSTMENT
+}
+
 // ─── Models ──────────────────────────────────────────────────────────────────
 
 model User {
@@ -73,6 +80,8 @@ model User {
   // Friend System
   friendsAdded   Friendship[] @relation("UserFriends")
   friendsAddedBy Friendship[] @relation("FriendUsers")
+
+  pointsEntries PointsLedgerEntry[]
 
   @@map("users")
 }
@@ -164,6 +173,28 @@ model HealthRecord {
 
   @@unique([userId, recordDate, source])
   @@map("health_records")
+}
+
+// Append-only ledger: the single source of truth for points.
+// User.totalPoints is a denormalized cache and must always equal
+// SUM(amount) of this table for that user (both are written in the
+// same transaction via pointsLedger.service).
+model PointsLedgerEntry {
+  id            String       @id @default(uuid())
+  userId        String
+  amount        Int // applied delta; may be negative (cancellation / reduced sync)
+  reason        PointsReason
+  // Thai calendar day the points belong to (UTC-midnight tag, same convention
+  // as HealthRecord.recordDate). Period leaderboards sum over this column.
+  effectiveDate DateTime     @db.Date
+  // Optional reference: activityId for check-ins, HealthSource for syncs.
+  refId         String?
+  createdAt     DateTime     @default(now())
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId, effectiveDate])
+  @@map("points_ledger")
 }
 
 model Friendship {

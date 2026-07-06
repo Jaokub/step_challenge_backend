@@ -7,6 +7,7 @@
 import prisma from '../config/prisma.js';
 import pointsService from './points.service.js';
 import { calculateCheckInStreak } from './streak.service.js';
+import { applyPoints } from './pointsLedger.service.js';
 
 /**
  * @typedef {Object} HealthMetrics
@@ -29,72 +30,60 @@ import { calculateCheckInStreak } from './streak.service.js';
 export const syncHealthRecord = async (userId, normalizedDate, source, metrics) => {
   const { steps, calories, distanceKm, activeMinutes } = metrics;
 
-  const existingRecord = await prisma.healthRecord.findUnique({
-    where: { userId_recordDate_source: { userId, recordDate: normalizedDate, source } },
-  });
-
-  const oldMetrics = {
-    steps: existingRecord?.steps || 0,
-    calories: existingRecord?.calories || 0,
-    distanceKm: existingRecord?.distanceKm || 0,
-  };
-
-  const newMetrics = {
-    steps: steps !== undefined ? steps : oldMetrics.steps,
-    calories: calories !== undefined ? calories : oldMetrics.calories,
-    distanceKm: distanceKm !== undefined ? distanceKm : oldMetrics.distanceKm,
-  };
-
+  // Streak lookup stays outside the transaction (read-only, non-critical).
   const currentStreak = await calculateCheckInStreak(userId);
-  const deltaPoints = pointsService.calculatePointsDelta(oldMetrics, newMetrics, currentStreak);
 
-  const upsertData = {
-    where: { userId_recordDate_source: { userId, recordDate: normalizedDate, source } },
-    update: {
-      steps: steps !== undefined ? steps : undefined,
-      calories: calories !== undefined ? calories : undefined,
-      distanceKm: distanceKm !== undefined ? distanceKm : undefined,
-      activeMinutes: activeMinutes !== undefined ? activeMinutes : undefined,
-      createdAt: new Date(),
-    },
-    create: {
-      userId,
-      recordDate: normalizedDate,
-      source,
-      steps: steps || 0,
-      calories: calories || 0,
-      distanceKm: distanceKm || 0,
-      activeMinutes: activeMinutes || 0,
-    },
-  };
-
-  if (deltaPoints !== 0) {
-    const [upsertedRecord] = await prisma.$transaction(async (tx) => {
-      const upserted = await tx.healthRecord.upsert(upsertData);
-
-      if (deltaPoints > 0) {
-        await tx.user.update({
-          where: { id: userId },
-          data: { totalPoints: { increment: deltaPoints } },
-        });
-      } else {
-        // Clamp: never let totalPoints drop below 0
-        const user = await tx.user.findUnique({ where: { id: userId }, select: { totalPoints: true } });
-        const safeDecrement = Math.min(Math.abs(deltaPoints), user?.totalPoints ?? 0);
-        if (safeDecrement > 0) {
-          await tx.user.update({
-            where: { id: userId },
-            data: { totalPoints: { decrement: safeDecrement } },
-          });
-        }
-      }
-
-      return upserted;
+  // Read-compute-write happens inside ONE transaction so two concurrent
+  // syncs can't both read the same "old" record and double-award the delta.
+  return prisma.$transaction(async (tx) => {
+    const existingRecord = await tx.healthRecord.findUnique({
+      where: { userId_recordDate_source: { userId, recordDate: normalizedDate, source } },
     });
-    return upsertedRecord;
-  }
 
-  return prisma.healthRecord.upsert(upsertData);
+    const oldMetrics = {
+      steps: existingRecord?.steps || 0,
+      calories: existingRecord?.calories || 0,
+      distanceKm: existingRecord?.distanceKm || 0,
+    };
+
+    const newMetrics = {
+      steps: steps !== undefined ? steps : oldMetrics.steps,
+      calories: calories !== undefined ? calories : oldMetrics.calories,
+      distanceKm: distanceKm !== undefined ? distanceKm : oldMetrics.distanceKm,
+    };
+
+    const deltaPoints = pointsService.calculatePointsDelta(oldMetrics, newMetrics, currentStreak);
+
+    const upserted = await tx.healthRecord.upsert({
+      where: { userId_recordDate_source: { userId, recordDate: normalizedDate, source } },
+      update: {
+        steps: steps !== undefined ? steps : undefined,
+        calories: calories !== undefined ? calories : undefined,
+        distanceKm: distanceKm !== undefined ? distanceKm : undefined,
+        activeMinutes: activeMinutes !== undefined ? activeMinutes : undefined,
+        createdAt: new Date(),
+      },
+      create: {
+        userId,
+        recordDate: normalizedDate,
+        source,
+        steps: steps || 0,
+        calories: calories || 0,
+        distanceKm: distanceKm || 0,
+        activeMinutes: activeMinutes || 0,
+      },
+    });
+
+    await applyPoints(tx, {
+      userId,
+      amount: deltaPoints,
+      reason: 'HEALTH_SYNC',
+      effectiveDate: normalizedDate,
+      refId: source,
+    });
+
+    return upserted;
+  });
 };
 
 /**

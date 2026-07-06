@@ -100,16 +100,7 @@ export const getGroupById = async (req, res) => {
       });
     }
 
-    // Check if the current user is a member of this group
-    const isMember = group.members.some((m) => m.user.id === userId);
-    if (!isMember) {
-      return res.status(403).json({
-        success: false,
-        data: null,
-        message: 'You are not a member of this group',
-      });
-    }
-
+    // Membership already verified by requireGroupMember middleware.
     const result = {
       id: group.id,
       name: group.name,
@@ -221,32 +212,9 @@ export const createGroup = async (req, res) => {
 export const updateGroup = async (req, res) => {
   try {
     const { id } = req.params;
-    const userId = req.user.id;
     const { name, description } = req.body;
 
-    // Check user's role in the group
-    const membership = await prisma.groupMember.findUnique({
-      where: {
-        groupId_userId: { groupId: id, userId },
-      },
-    });
-
-    if (!membership) {
-      return res.status(403).json({
-        success: false,
-        data: null,
-        message: 'You are not a member of this group',
-      });
-    }
-
-    if (!['OWNER', 'ADMIN'].includes(membership.role)) {
-      return res.status(403).json({
-        success: false,
-        data: null,
-        message: 'Only group owners and admins can update group details',
-      });
-    }
-
+    // Role check (OWNER/ADMIN) handled by requireGroupMember middleware.
     const updateData = {};
     if (name !== undefined) updateData.name = name;
     if (description !== undefined) updateData.description = description;
@@ -293,31 +261,8 @@ export const updateGroup = async (req, res) => {
 export const deleteGroup = async (req, res) => {
   try {
     const { id } = req.params;
-    const userId = req.user.id;
 
-    // Check user's role in the group
-    const membership = await prisma.groupMember.findUnique({
-      where: {
-        groupId_userId: { groupId: id, userId },
-      },
-    });
-
-    if (!membership) {
-      return res.status(403).json({
-        success: false,
-        data: null,
-        message: 'You are not a member of this group',
-      });
-    }
-
-    if (membership.role !== 'OWNER') {
-      return res.status(403).json({
-        success: false,
-        data: null,
-        message: 'Only the group owner can delete the group',
-      });
-    }
-
+    // OWNER role check handled by requireGroupMember middleware.
     // Delete all members first, then the group (in a transaction)
     await prisma.$transaction(async (tx) => {
       await tx.groupMember.deleteMany({ where: { groupId: id } });
@@ -430,29 +375,7 @@ export const removeMember = async (req, res) => {
     const { id: groupId, userId: targetUserId } = req.params;
     const currentUserId = req.user.id;
 
-    // Get current user's membership
-    const currentMembership = await prisma.groupMember.findUnique({
-      where: {
-        groupId_userId: { groupId, userId: currentUserId },
-      },
-    });
-
-    if (!currentMembership) {
-      return res.status(403).json({
-        success: false,
-        data: null,
-        message: 'You are not a member of this group',
-      });
-    }
-
-    if (!['OWNER', 'ADMIN'].includes(currentMembership.role)) {
-      return res.status(403).json({
-        success: false,
-        data: null,
-        message: 'Only group owners and admins can remove members',
-      });
-    }
-
+    // Caller's OWNER/ADMIN role verified by requireGroupMember middleware.
     // Cannot remove yourself via this endpoint
     if (currentUserId === targetUserId) {
       return res.status(400).json({
@@ -514,23 +437,8 @@ export const removeMember = async (req, res) => {
 export const getGroupMembers = async (req, res) => {
   try {
     const { id: groupId } = req.params;
-    const userId = req.user.id;
 
-    // Check if user is a member
-    const membership = await prisma.groupMember.findUnique({
-      where: {
-        groupId_userId: { groupId, userId },
-      },
-    });
-
-    if (!membership) {
-      return res.status(403).json({
-        success: false,
-        data: null,
-        message: 'You are not a member of this group',
-      });
-    }
-
+    // Membership verified by requireGroupMember middleware.
     const members = await prisma.groupMember.findMany({
       where: { groupId },
       include: {
@@ -577,23 +485,8 @@ export const getGroupMembers = async (req, res) => {
 export const getGroupQRCode = async (req, res) => {
   try {
     const { id: groupId } = req.params;
-    const userId = req.user.id;
 
-    // Check if user is a member
-    const membership = await prisma.groupMember.findUnique({
-      where: {
-        groupId_userId: { groupId, userId },
-      },
-    });
-
-    if (!membership) {
-      return res.status(403).json({
-        success: false,
-        data: null,
-        message: 'You are not a member of this group',
-      });
-    }
-
+    // Membership verified by requireGroupMember middleware.
     const group = await prisma.appGroup.findUnique({
       where: { id: groupId },
       select: { id: true, name: true, qrInviteCode: true },
@@ -638,19 +531,8 @@ export const leaveGroup = async (req, res) => {
     const { id: groupId } = req.params;
     const userId = req.user.id;
 
-    const membership = await prisma.groupMember.findUnique({
-      where: {
-        groupId_userId: { groupId, userId },
-      },
-    });
-
-    if (!membership) {
-      return res.status(404).json({
-        success: false,
-        data: null,
-        message: 'You are not a member of this group',
-      });
-    }
+    // Membership verified by requireGroupMember middleware (404 if not a member).
+    const membership = req.groupMembership;
 
     if (membership.role === 'OWNER') {
       return res.status(403).json({

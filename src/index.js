@@ -6,13 +6,11 @@ import compression from 'compression';
 import morgan from 'morgan';
 
 // ─── Global Timezone Setup (Thailand UTC+7) ──────────────────────────────────
+// Host timezone for any code that uses local-time Date methods. All explicit
+// "which Thai calendar day is this" logic lives in utils/thaiTime.js.
+// NOTE: dates are serialized as standard UTC ISO strings ("...Z"). Clients
+// format them in local time for display (mobile: utils/formatDate.ts).
 process.env.TZ = 'Asia/Bangkok';
-
-Date.prototype.toJSON = function () {
-  const tzOffset = 7 * 60; // UTC+7 offset in minutes
-  const localDate = new Date(this.getTime() + tzOffset * 60 * 1000);
-  return localDate.toISOString().replace('Z', '+07:00');
-};
 
 import errorHandler from './middleware/errorHandler.js';
 import authRoutes from './routes/auth.routes.js';
@@ -69,7 +67,7 @@ app.use(cors({
 }));
 app.use(compression());
 app.use(morgan(process.env.NODE_ENV === 'production' ? 'combined' : 'dev'));
-app.use(express.json({ limit: '10mb' }));
+app.use(express.json({ limit: '1mb' }));
 app.use(express.urlencoded({ extended: true }));
 
 // ─── Health Check ────────────────────────────────────────────────────────────
