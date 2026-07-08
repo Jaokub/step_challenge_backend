@@ -89,6 +89,12 @@ export const getGroupById = async (req, res) => {
         _count: {
           select: { members: true },
         },
+        parentGroup: {
+          select: { id: true, name: true },
+        },
+        childGroups: {
+          select: { id: true, name: true, _count: { select: { members: true } } },
+        },
       },
     });
 
@@ -109,6 +115,13 @@ export const getGroupById = async (req, res) => {
       memberCount: group._count.members,
       createdBy: group.createdBy,
       createdAt: group.createdAt,
+      parentGroupId: group.parentGroupId,
+      parentGroup: group.parentGroup,
+      childGroups: group.childGroups.map((c) => ({
+        id: c.id,
+        name: c.name,
+        memberCount: c._count.members,
+      })),
       members: group.members.map((m) => ({
         id: m.id,
         role: m.role,

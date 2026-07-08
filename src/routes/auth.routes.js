@@ -1,7 +1,7 @@
 import { Router } from 'express';
 import { body } from 'express-validator';
 import rateLimit from 'express-rate-limit';
-import { register, login, refreshToken, getMe, changePassword } from '../controllers/auth.controller.js';
+import { register, login, refreshToken, getMe, changePassword, googleSignIn } from '../controllers/auth.controller.js';
 import { authenticate } from '../middleware/auth.js';
 import { validate } from '../middleware/validate.js';
 
@@ -81,6 +81,21 @@ router.post(
       .withMessage('Refresh token is required.'),
   ]),
   refreshToken
+);
+
+/**
+ * POST /auth/google
+ * Sign in (or sign up) with a Google ID token.
+ */
+router.post(
+  '/google',
+  authLimiter,
+  validate([
+    body('idToken')
+      .notEmpty()
+      .withMessage('idToken is required.'),
+  ]),
+  googleSignIn
 );
 
 /**

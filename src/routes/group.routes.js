@@ -1,7 +1,7 @@
 import { Router } from 'express';
 import { body } from 'express-validator';
 import { authenticate } from '../middleware/auth.js';
-import { requireGroupMember } from '../middleware/groupAuth.js';
+import { requireGroupMember, requireGroupVisibility } from '../middleware/groupAuth.js';
 import { validate } from '../middleware/validate.js';
 import {
   getGroups,
@@ -15,6 +15,7 @@ import {
   getGroupQRCode,
   leaveGroup,
 } from '../controllers/group.controller.js';
+import { getGroupOverview, getGroupSiblings } from '../controllers/groupOverview.controller.js';
 
 const router = Router();
 
@@ -142,6 +143,30 @@ router.post(
   authenticate,
   requireGroupMember({ notMemberStatus: 404 }),
   leaveGroup
+);
+
+/**
+ * @route GET /api/groups/:id/overview
+ * @desc Own overall stats + full ranking + top3/top5 for a group.
+ * @access Private (members of the group, or members of its parent group)
+ */
+router.get(
+  '/:id/overview',
+  authenticate,
+  requireGroupVisibility(['self', 'ancestor']),
+  getGroupOverview
+);
+
+/**
+ * @route GET /api/groups/:id/siblings
+ * @desc Sibling groups' overall stats only (never their member ranking).
+ * @access Private (members of the group, or members of its parent group)
+ */
+router.get(
+  '/:id/siblings',
+  authenticate,
+  requireGroupVisibility(['self', 'ancestor']),
+  getGroupSiblings
 );
 
 export default router;

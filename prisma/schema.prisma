@@ -54,15 +54,35 @@ enum PointsReason {
   ADJUSTMENT
 }
 
+enum EventStatus {
+  UPCOMING
+  ONGOING
+  COMPLETED
+  CANCELLED
+}
+
+// How a participant entered an event. GROUP = joined via a group admin (their
+// groupId is set, they rank in the group-sum board); INDIVIDUAL = joined alone.
+enum EventJoinMode {
+  GROUP
+  INDIVIDUAL
+}
+
 // ─── Models ──────────────────────────────────────────────────────────────────
 
 model User {
   id           String   @id @default(uuid())
   email        String   @unique
-  passwordHash String
+  // Nullable: Google-only users have no password. Every password-path
+  // (login, change-password) must guard for null — see auth.controller.js.
+  passwordHash String?
   fullName     String
   nickname     String?
-  department   String
+  // Nullable: Google sign-up doesn't collect this; mobile prompts the user
+  // to fill it in via edit-profile after first sign-in.
+  department   String?
+  // Set when the account is linked to (or created via) Google Sign-In.
+  googleId     String?  @unique
   role         Role     @default(STAFF)
   avatarUrl    String?
   totalPoints  Int      @default(0)
@@ -82,6 +102,9 @@ model User {
   friendsAddedBy Friendship[] @relation("FriendUsers")
 
   pointsEntries PointsLedgerEntry[]
+
+  createdEvents      Event[]
+  eventParticipation EventParticipant[]
 
   @@map("users")
 }
@@ -134,12 +157,20 @@ model AppGroup {
   description  String?
   qrInviteCode String   @unique
   createdById  String
+  // Hierarchy: a group may belong to one parent (e.g. Faculty is parent of
+  // Computer/Electrical dept groups). Nullable so existing flat groups are
+  // unaffected. Tree is shallow (2 levels) by design — no recursive queries.
+  parentGroupId String?
   createdAt    DateTime @default(now())
   updatedAt    DateTime @updatedAt
 
   // Relations
-  createdBy User          @relation(fields: [createdById], references: [id])
-  members   GroupMember[]
+  createdBy   User          @relation(fields: [createdById], references: [id])
+  members     GroupMember[]
+  parentGroup AppGroup?     @relation("GroupTree", fields: [parentGroupId], references: [id])
+  childGroups AppGroup[]    @relation("GroupTree")
+
+  eventParticipants EventParticipant[]
 
   @@map("app_groups")
 }
@@ -212,4 +243,46 @@ model Friendship {
 
   @@unique([userId, friendId])
   @@map("friendships")
+}
+
+// A step-count competition. Steps are aggregated on read from HealthRecord
+// within [startDate, endDate] — an Event owns no points/steps of its own and
+// never touches the frozen points/health services.
+model Event {
+  id          String      @id @default(uuid())
+  title       String
+  description String?
+  startDate   DateTime
+  endDate     DateTime
+  status      EventStatus @default(UPCOMING)
+  createdById String
+  createdAt   DateTime    @default(now())
+  updatedAt   DateTime    @updatedAt
+
+  // Relations
+  createdBy    User               @relation(fields: [createdById], references: [id])
+  participants EventParticipant[]
+
+  @@map("events")
+}
+
+model EventParticipant {
+  id       String        @id @default(uuid())
+  eventId  String
+  userId   String
+  // Set only when joinMode = GROUP; the group the participant represents in
+  // the group-sum leaderboard. Null for INDIVIDUAL joins.
+  groupId  String?
+  joinMode EventJoinMode
+  joinedAt DateTime      @default(now())
+
+  // Relations
+  event Event     @relation(fields: [eventId], references: [id], onDelete: Cascade)
+  user  User      @relation(fields: [userId], references: [id])
+  group AppGroup? @relation(fields: [groupId], references: [id])
+
+  // A user participates in a given event at most once.
+  @@unique([eventId, userId])
+  @@index([eventId, groupId])
+  @@map("event_participants")
 }

@@ -7,6 +7,7 @@ import {
   verifyRefreshToken,
 } from '../services/auth.service.js';
 import { sanitizeUser } from '../services/userSanitizer.service.js';
+import { verifyGoogleIdToken } from '../services/googleAuth.service.js';
 
 /**
  * POST /auth/register
@@ -76,6 +77,16 @@ export async function login(req, res) {
         success: false,
         data: null,
         message: 'Invalid email or password.',
+      });
+    }
+
+    // Google-only accounts have no passwordHash — comparePassword() would
+    // throw on a null hash, so guard explicitly and send them to Google sign-in.
+    if (!user.passwordHash) {
+      return res.status(401).json({
+        success: false,
+        data: null,
+        message: 'This account uses Google sign-in. Please continue with Google.',
       });
     }
 
@@ -224,13 +235,17 @@ export async function changePassword(req, res) {
       });
     }
 
-    const isMatch = await comparePassword(currentPassword, user.passwordHash);
-    if (!isMatch) {
-      return res.status(401).json({
-        success: false,
-        data: null,
-        message: 'Incorrect current password.',
-      });
+    // Google-only accounts have no passwordHash yet — nothing to compare
+    // against, so let them set an initial password instead of failing.
+    if (user.passwordHash) {
+      const isMatch = await comparePassword(currentPassword, user.passwordHash);
+      if (!isMatch) {
+        return res.status(401).json({
+          success: false,
+          data: null,
+          message: 'Incorrect current password.',
+        });
+      }
     }
 
     const passwordHash = await hashPassword(newPassword);
@@ -246,6 +261,78 @@ export async function changePassword(req, res) {
     });
   } catch (error) {
     console.error('Change password error:', error);
+    return res.status(500).json({
+      success: false,
+      data: null,
+      message: 'Internal server error.',
+    });
+  }
+}
+
+/**
+ * POST /auth/google
+ * Sign in (or sign up) with a Google ID token obtained on-device.
+ * - Existing googleId -> log in.
+ * - No googleId but email matches an existing user -> link the account.
+ * - No match at all -> create a new STAFF user (passwordHash + department
+ *   null; mobile prompts the user to fill in department via edit-profile).
+ */
+export async function googleSignIn(req, res) {
+  try {
+    const { idToken } = req.body;
+
+    let identity;
+    try {
+      identity = await verifyGoogleIdToken(idToken);
+    } catch (err) {
+      return res.status(401).json({
+        success: false,
+        data: null,
+        message: err.message || 'Invalid Google token.',
+      });
+    }
+
+    let user = await prisma.user.findUnique({ where: { googleId: identity.googleId } });
+
+    if (!user) {
+      const existingByEmail = await prisma.user.findUnique({ where: { email: identity.email } });
+
+      if (existingByEmail) {
+        // Link the Google identity to the existing email/password account.
+        user = await prisma.user.update({
+          where: { id: existingByEmail.id },
+          data: { googleId: identity.googleId },
+        });
+      } else {
+        user = await prisma.user.create({
+          data: {
+            email: identity.email,
+            passwordHash: null,
+            fullName: identity.fullName,
+            department: null,
+            googleId: identity.googleId,
+            avatarUrl: identity.avatarUrl,
+            role: 'STAFF',
+            totalPoints: 0,
+          },
+        });
+      }
+    }
+
+    const accessToken = generateAccessToken(user);
+    const refreshToken = generateRefreshToken(user);
+
+    return res.status(200).json({
+      success: true,
+      data: {
+        user: sanitizeUser(user),
+        accessToken,
+        refreshToken,
+      },
+      message: 'Google sign-in successful.',
+    });
+  } catch (error) {
+    console.error('Google sign-in error:', error);
     return res.status(500).json({
       success: false,
       data: null,

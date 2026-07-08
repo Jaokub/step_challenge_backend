@@ -1,4 +1,5 @@
 import prisma from '../config/prisma.js';
+import { resolveGroupAccess } from '../services/group.scope.js';
 
 /**
  * Group membership/role middleware factory.
@@ -62,6 +63,56 @@ export const requireGroupMember = ({ roles = null, roleMessage = 'Access denied.
       }
 
       req.groupMembership = membership;
+      return next();
+    } catch (error) {
+      return next(error);
+    }
+  };
+};
+
+/**
+ * Hierarchy visibility middleware factory. Resolves the caller's relation to
+ * `req.params.id` (self / ancestor / sibling / none) via group.scope.js and
+ * only allows the request through if that relation is in `allow`.
+ *
+ * The one rule this enforces everywhere it's used on the "sibling" side:
+ * siblings only ever get stat-level data, never a member ranking — that's
+ * guaranteed by which service function the route handler calls next, not by
+ * this middleware, but this middleware is what keeps a sibling from calling
+ * the *own-ranking* route for a group that isn't theirs.
+ *
+ * @param {string[]} allow - relations that may proceed, e.g. ['self', 'ancestor'].
+ * @returns {import('express').RequestHandler}
+ *
+ * @example
+ * router.get('/:id/overview', authenticate, requireGroupVisibility(['self', 'ancestor']), getGroupOverview);
+ */
+export const requireGroupVisibility = (allow) => {
+  return async (req, res, next) => {
+    try {
+      const groupId = req.params.id;
+      const userId = req.user.id;
+
+      const { relation, target } = await resolveGroupAccess(userId, groupId);
+
+      if (!target) {
+        return res.status(404).json({
+          success: false,
+          data: null,
+          message: 'Group not found',
+        });
+      }
+
+      if (!relation || !allow.includes(relation)) {
+        return res.status(403).json({
+          success: false,
+          data: null,
+          message: 'You do not have permission to view this group',
+        });
+      }
+
+      req.groupRelation = relation;
+      req.groupNode = target;
       return next();
     } catch (error) {
       return next(error);
