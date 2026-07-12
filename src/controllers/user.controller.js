@@ -146,6 +146,56 @@ export async function getAllUsers(req, res) {
 }
 
 /**
+ * PATCH /users/:id/role
+ * Admin only — grant or revoke ADMIN. Gap #5 (BUILD_PLAN.md Phase 2).
+ * Guards against demoting the last remaining admin.
+ */
+export async function updateUserRole(req, res) {
+  try {
+    const { id } = req.params;
+    const { role } = req.body;
+
+    const targetUser = await prisma.user.findUnique({ where: { id } });
+    if (!targetUser) {
+      return res.status(404).json({
+        success: false,
+        data: null,
+        message: 'User not found.',
+      });
+    }
+
+    if (targetUser.role === 'ADMIN' && role === 'STAFF') {
+      const adminCount = await prisma.user.count({ where: { role: 'ADMIN' } });
+      if (adminCount <= 1) {
+        return res.status(409).json({
+          success: false,
+          data: null,
+          message: 'Cannot revoke the last remaining admin.',
+        });
+      }
+    }
+
+    const updatedUser = await prisma.user.update({
+      where: { id },
+      data: { role },
+    });
+
+    return res.status(200).json({
+      success: true,
+      data: { user: sanitizeUser(updatedUser) },
+      message: 'User role updated successfully.',
+    });
+  } catch (error) {
+    console.error('UpdateUserRole error:', error);
+    return res.status(500).json({
+      success: false,
+      data: null,
+      message: 'Internal server error.',
+    });
+  }
+}
+
+/**
  * GET /users/search
  * Search users by name or email (excluding self) to add as friends.
  * Query params: q (search query).

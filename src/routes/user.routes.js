@@ -5,6 +5,7 @@ import {
   updateProfile,
   getAllUsers,
   searchUsers,
+  updateUserRole,
 } from '../controllers/user.controller.js';
 import { authenticate, requireRole } from '../middleware/auth.js';
 import { validate } from '../middleware/validate.js';
@@ -55,5 +56,21 @@ router.put(
  * Admin only — list all users with pagination and search.
  */
 router.get('/', authenticate, requireRole('ADMIN'), getAllUsers);
+
+/**
+ * PATCH /users/:id/role
+ * Admin only — grant or revoke ADMIN (gap #5, BUILD_PLAN.md Phase 2).
+ */
+router.patch(
+  '/:id/role',
+  authenticate,
+  requireRole('ADMIN'),
+  validate([
+    body('role')
+      .isIn(['ADMIN', 'STAFF'])
+      .withMessage('role must be ADMIN or STAFF'),
+  ]),
+  updateUserRole
+);
 
 export default router;

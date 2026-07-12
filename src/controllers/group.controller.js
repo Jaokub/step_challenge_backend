@@ -154,6 +154,17 @@ export const createGroup = async (req, res) => {
     const userId = req.user.id;
     const { name, description } = req.body;
 
+    // Gap #2 (BUILD_PLAN.md Phase 2): cap = 3 groups per creator. Premium
+    // tier lifting this to 5 is a future decision — ignore for now.
+    const ownedGroupCount = await prisma.appGroup.count({ where: { createdById: userId } });
+    if (ownedGroupCount >= 3) {
+      return res.status(409).json({
+        success: false,
+        data: null,
+        message: 'You have reached the maximum of 3 groups you can create.',
+      });
+    }
+
     // Generate a unique invite code, retrying on collision
     let inviteCode;
     let isUnique = false;
