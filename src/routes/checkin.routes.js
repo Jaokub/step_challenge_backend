@@ -7,6 +7,7 @@ import {
   getCheckInHistory,
   getActivityCheckIns,
   cancelCheckIn,
+  adminCheckIn,
 } from '../controllers/checkin.controller.js';
 
 const router = Router();
@@ -38,6 +39,31 @@ router.post(
       .withMessage('Longitude must be between -180 and 180'),
   ]),
   checkInByQR
+);
+
+/**
+ * @route   POST /api/checkins/admin-checkin
+ * @desc    Manually check a user in to an activity (front-desk / walk-in flow)
+ * @access  Private/Admin
+ */
+router.post(
+  '/admin-checkin',
+  requireRole('ADMIN'),
+  validate([
+    body('activityId')
+      .trim()
+      .notEmpty()
+      .withMessage('activityId is required')
+      .isUUID()
+      .withMessage('activityId must be a valid UUID'),
+    body('userId')
+      .trim()
+      .notEmpty()
+      .withMessage('userId is required')
+      .isUUID()
+      .withMessage('userId must be a valid UUID'),
+  ]),
+  adminCheckIn
 );
 
 /**

@@ -1,8 +1,9 @@
 import prisma from '../config/prisma.js';
 import { applyPoints } from '../services/pointsLedger.service.js';
 import { thaiDayTag } from '../utils/thaiTime.js';
+import { createCheckIn, CheckInError } from '../services/checkin.service.js';
 
-class ActivityFullError extends Error {}
+const CHECKIN_ERROR_STATUS = { INVALID_STATUS: 400, DUPLICATE: 409, FULL: 400, CONFLICT: 409 };
 
 /**
  * @desc    Check in to an activity by scanning its QR code
@@ -25,101 +26,21 @@ export const checkInByQR = async (req, res) => {
       });
     }
 
-    // Validate activity status
-    if (!['UPCOMING', 'ONGOING'].includes(activity.status)) {
-      return res.status(400).json({
-        success: false,
-        data: null,
-        message: `Cannot check in. Activity is ${activity.status.toLowerCase()}.`,
-      });
-    }
-
-    // Check if user already checked in
-    const existingCheckIn = await prisma.checkIn.findUnique({
-      where: {
-        userId_activityId: {
-          userId,
-          activityId: activity.id,
-        },
-      },
-    });
-
-    if (existingCheckIn) {
-      return res.status(409).json({
-        success: false,
-        data: null,
-        message: 'You have already checked in to this activity.',
-      });
-    }
-
-    // Re-check capacity and create the check-in inside a Serializable transaction so
-    // concurrent check-ins for the same activity can't both slip past the capacity check.
     let checkIn;
     try {
-      checkIn = await prisma.$transaction(
-        async (tx) => {
-          if (activity.maxParticipants) {
-            const count = await tx.checkIn.count({ where: { activityId: activity.id } });
-            if (count >= activity.maxParticipants) {
-              throw new ActivityFullError();
-            }
-          }
-
-          const created = await tx.checkIn.create({
-            data: {
-              userId,
-              activityId: activity.id,
-              latitude: latitude ? parseFloat(latitude) : null,
-              longitude: longitude ? parseFloat(longitude) : null,
-              method: 'QR',
-            },
-            include: {
-              activity: {
-                select: {
-                  id: true,
-                  title: true,
-                  location: true,
-                  startDate: true,
-                  endDate: true,
-                  points: true,
-                  status: true,
-                },
-              },
-              user: {
-                select: { id: true, fullName: true, totalPoints: true },
-              },
-            },
-          });
-
-          await applyPoints(tx, {
-            userId,
-            amount: activity.points || 0,
-            reason: 'ACTIVITY_CHECKIN',
-            effectiveDate: thaiDayTag(),
-            refId: activity.id,
-          });
-
-          return created;
-        },
-        { isolationLevel: 'Serializable' }
-      );
-    } catch (txError) {
-      if (txError instanceof ActivityFullError) {
-        return res.status(400).json({
-          success: false,
-          data: null,
-          message: 'Activity is full. No more check-ins allowed.',
-        });
+      checkIn = await createCheckIn({
+        activity,
+        userId,
+        method: 'QR',
+        latitude: latitude ? parseFloat(latitude) : null,
+        longitude: longitude ? parseFloat(longitude) : null,
+      });
+    } catch (err) {
+      if (err instanceof CheckInError) {
+        const message = err.code === 'DUPLICATE' ? 'You have already checked in to this activity.' : err.message;
+        return res.status(CHECKIN_ERROR_STATUS[err.code] || 400).json({ success: false, data: null, message });
       }
-      // Postgres serialization failure: another concurrent check-in won the race.
-      if (txError.code === 'P2034') {
-        return res.status(409).json({
-          success: false,
-          data: null,
-          message: 'Please try again — a conflicting check-in was just processed.',
-        });
-      }
-      throw txError;
+      throw err;
     }
 
     return res.status(201).json({
@@ -138,6 +59,66 @@ export const checkInByQR = async (req, res) => {
         success: false,
         data: null,
         message: 'You have already checked in to this activity.',
+      });
+    }
+    return res.status(500).json({
+      success: false,
+      data: null,
+      message: 'Failed to check in',
+    });
+  }
+};
+
+/**
+ * @desc    Manually check a user in to an activity (front-desk / walk-in flow).
+ *          Awards points through the same `createCheckIn` path as a QR
+ *          check-in — pointsLedger stays the single source of truth.
+ * @route   POST /api/checkins/admin-checkin
+ * @access  Private/Admin
+ */
+export const adminCheckIn = async (req, res) => {
+  try {
+    const { activityId, userId } = req.body;
+
+    const [activity, targetUser] = await Promise.all([
+      prisma.activity.findUnique({ where: { id: activityId } }),
+      prisma.user.findUnique({ where: { id: userId }, select: { id: true } }),
+    ]);
+
+    if (!activity) {
+      return res.status(404).json({ success: false, data: null, message: 'Activity not found.' });
+    }
+    if (!targetUser) {
+      return res.status(404).json({ success: false, data: null, message: 'User not found.' });
+    }
+
+    let checkIn;
+    try {
+      checkIn = await createCheckIn({ activity, userId, method: 'MANUAL' });
+    } catch (err) {
+      if (err instanceof CheckInError) {
+        const message =
+          err.code === 'DUPLICATE' ? 'This person has already checked in to this activity.' : err.message;
+        return res.status(CHECKIN_ERROR_STATUS[err.code] || 400).json({ success: false, data: null, message });
+      }
+      throw err;
+    }
+
+    return res.status(201).json({
+      success: true,
+      data: {
+        checkIn,
+        pointsAwarded: activity.points || 0,
+      },
+      message: `Checked in successfully.${activity.points ? ` +${activity.points} points.` : ''}`,
+    });
+  } catch (error) {
+    console.error('adminCheckIn error:', error);
+    if (error.code === 'P2002') {
+      return res.status(409).json({
+        success: false,
+        data: null,
+        message: 'This person has already checked in to this activity.',
       });
     }
     return res.status(500).json({
@@ -285,7 +266,11 @@ export const getActivityCheckIns = async (req, res) => {
 };
 
 /**
- * @desc    Cancel a check-in (only if activity hasn't started yet)
+ * @desc    Cancel a check-in. Self-service is only allowed before the
+ *          activity starts (prevents gaming the system after the fact).
+ *          An admin may cancel *any* check-in at any time — this is the
+ *          "เลิกเช็คอิน" undo action for a manual/QR check-in mistake made
+ *          mid-activity, so the time restriction doesn't apply to it.
  * @route   DELETE /api/checkins/:id
  * @access  Private
  */
@@ -293,6 +278,7 @@ export const cancelCheckIn = async (req, res) => {
   try {
     const { id } = req.params;
     const userId = req.user.id;
+    const isAdmin = req.user.role === 'ADMIN';
 
     // Find the check-in
     const checkIn = await prisma.checkIn.findUnique({
@@ -318,8 +304,10 @@ export const cancelCheckIn = async (req, res) => {
       });
     }
 
-    // Ensure the check-in belongs to the current user
-    if (checkIn.userId !== userId) {
+    const isOwnCheckIn = checkIn.userId === userId;
+
+    // Must be either the owner or an admin
+    if (!isOwnCheckIn && !isAdmin) {
       return res.status(403).json({
         success: false,
         data: null,
@@ -327,23 +315,28 @@ export const cancelCheckIn = async (req, res) => {
       });
     }
 
-    // Only allow cancellation if the activity hasn't started yet
-    const now = new Date();
-    if (checkIn.activity.startDate <= now) {
-      return res.status(400).json({
-        success: false,
-        data: null,
-        message: 'Cannot cancel check-in. The activity has already started.',
-      });
+    // Self-service cancellation only allowed before the activity starts.
+    // Admin override is exempt from this window.
+    if (isOwnCheckIn) {
+      const now = new Date();
+      if (checkIn.activity.startDate <= now) {
+        return res.status(400).json({
+          success: false,
+          data: null,
+          message: 'Cannot cancel check-in. The activity has already started.',
+        });
+      }
     }
 
     // Delete the check-in and reverse the awarded points in one transaction.
     // The reversal is dated to the day the points were originally earned so
-    // period leaderboards for that day net out to zero.
+    // period leaderboards for that day net out to zero. Reverse points on
+    // the check-in's own owner — not the caller, who may be an admin
+    // undoing someone else's check-in.
     await prisma.$transaction(async (tx) => {
       await tx.checkIn.delete({ where: { id } });
       await applyPoints(tx, {
-        userId,
+        userId: checkIn.userId,
         amount: -(checkIn.activity.points || 0),
         reason: 'CHECKIN_CANCELLED',
         effectiveDate: thaiDayTag(checkIn.checkedInAt),
