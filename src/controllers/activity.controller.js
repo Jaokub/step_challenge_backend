@@ -1,5 +1,6 @@
 import { v4 as uuidv4 } from 'uuid';
 import prisma from '../config/prisma.js';
+import { getMyParticipation } from '../services/activityParticipant.service.js';
 
 /**
  * @desc    List activities with filters, search, and pagination
@@ -138,6 +139,11 @@ export const getActivityById = async (req, res) => {
     // Check if current user has checked in
     const userCheckIn = activity.checkIns.find((ci) => ci.userId === userId);
 
+    // Registration-only cascade (BUILD_PLAN.md Phase 4) — separate from
+    // check-ins/points. Tells the mobile "your group already joined" badge
+    // and drives whether the "leave activity" action shows.
+    const participation = await getMyParticipation(id, userId);
+
     const result = {
       ...activity,
       participantCount: activity._count.checkIns,
@@ -148,6 +154,9 @@ export const getActivityById = async (req, res) => {
         checkedInAt: ci.checkedInAt,
         method: ci.method,
       })),
+      myParticipation: participation
+        ? { groupId: participation.groupId, groupName: participation.group?.name ?? null }
+        : null,
       _count: undefined,
       checkIns: undefined,
     };

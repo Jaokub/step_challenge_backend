@@ -10,6 +10,12 @@ import {
   deleteActivity,
   getMyActivities,
 } from '../controllers/activity.controller.js';
+import {
+  enrollGroupIntoActivity,
+  joinActivity,
+  leaveActivity,
+  getActivityParticipants,
+} from '../controllers/activityParticipant.controller.js';
 
 const router = Router();
 
@@ -36,6 +42,40 @@ router.get('/my', getMyActivities);
  * @access  Private
  */
 router.get('/:id', getActivityById);
+
+/**
+ * @route   POST /api/activities/:id/enroll-group
+ * @desc    Enroll every member of a group as activity participants
+ *          (registration only — no points, no check-ins). Caller must be
+ *          OWNER/ADMIN of the group.
+ * @access  Private
+ */
+router.post(
+  '/:id/enroll-group',
+  validate([body('groupId').trim().notEmpty().withMessage('groupId is required')]),
+  enrollGroupIntoActivity
+);
+
+/**
+ * @route   POST /api/activities/:id/join
+ * @desc    Individual self-enroll as an activity participant
+ * @access  Private
+ */
+router.post('/:id/join', joinActivity);
+
+/**
+ * @route   DELETE /api/activities/:id/leave
+ * @desc    Remove the caller's own participant row (opt out of a cascade)
+ * @access  Private
+ */
+router.delete('/:id/leave', leaveActivity);
+
+/**
+ * @route   GET /api/activities/:id/participants
+ * @desc    List activity participants (admin, or an already-enrolled caller)
+ * @access  Private
+ */
+router.get('/:id/participants', getActivityParticipants);
 
 /**
  * @route   POST /api/activities
