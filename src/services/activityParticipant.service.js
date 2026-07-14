@@ -21,7 +21,13 @@ export const getGroupMembership = (groupId, userId) =>
 /**
  * Group enroll — a group's OWNER/ADMIN registers every current member.
  * Idempotent: members already registered (via this group or individually)
- * keep their existing row.
+ * keep their existing row. Intentional: a member who previously called
+ * leaveActivity() has no row, so re-running this re-adds them — "leave" is
+ * a one-time opt-out, not a sticky exclusion. If a coordinator re-enrolls
+ * the group, everyone (including past leavers) is back on the roster. This
+ * was a deliberate call (2026-07-14): no suppression flag/table, so a
+ * leaver who wants to stay off the roster has to leave again after each
+ * re-enroll.
  * @param {string} activityId
  * @param {string} groupId
  * @returns {Promise<{added: number}>}

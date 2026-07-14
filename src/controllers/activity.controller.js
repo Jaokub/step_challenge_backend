@@ -62,7 +62,7 @@ export const getActivities = async (req, res) => {
             select: { id: true, fullName: true, department: true, avatarUrl: true },
           },
           _count: {
-            select: { checkIns: true },
+            select: { checkIns: true, activityParticipants: true },
           },
         },
       }),
@@ -71,7 +71,11 @@ export const getActivities = async (req, res) => {
 
     const activitiesWithCount = activities.map((activity) => ({
       ...activity,
+      // Checked-in count (existing meaning, unchanged) vs. registered-only
+      // count (ActivityParticipant — enrolled but not necessarily checked
+      // in yet; BUILD_PLAN.md Phase 4). Keep both distinct on the response.
       participantCount: activity._count.checkIns,
+      registeredCount: activity._count.activityParticipants,
       _count: undefined,
     }));
 
@@ -123,7 +127,7 @@ export const getActivityById = async (req, res) => {
           orderBy: { checkedInAt: 'desc' },
         },
         _count: {
-          select: { checkIns: true },
+          select: { checkIns: true, activityParticipants: true },
         },
       },
     });
@@ -146,7 +150,10 @@ export const getActivityById = async (req, res) => {
 
     const result = {
       ...activity,
+      // Checked-in count vs. registered-only count — distinct concepts, see
+      // getActivities() above for the same split.
       participantCount: activity._count.checkIns,
+      registeredCount: activity._count.activityParticipants,
       isCheckedIn: !!userCheckIn,
       userCheckIn: userCheckIn || null,
       participants: activity.checkIns.map((ci) => ({
@@ -336,7 +343,7 @@ export const updateActivity = async (req, res) => {
           select: { id: true, fullName: true, department: true, avatarUrl: true },
         },
         _count: {
-          select: { checkIns: true },
+          select: { checkIns: true, activityParticipants: true },
         },
       },
     });
@@ -346,6 +353,7 @@ export const updateActivity = async (req, res) => {
       data: {
         ...activity,
         participantCount: activity._count.checkIns,
+        registeredCount: activity._count.activityParticipants,
         _count: undefined,
       },
       message: 'Activity updated successfully',
@@ -437,7 +445,7 @@ export const getMyActivities = async (req, res) => {
                 select: { id: true, fullName: true, department: true, avatarUrl: true },
               },
               _count: {
-                select: { checkIns: true },
+                select: { checkIns: true, activityParticipants: true },
               },
             },
           },
@@ -449,6 +457,7 @@ export const getMyActivities = async (req, res) => {
     const activities = checkIns.map((ci) => ({
       ...ci.activity,
       participantCount: ci.activity._count.checkIns,
+      registeredCount: ci.activity._count.activityParticipants,
       _count: undefined,
       checkedInAt: ci.checkedInAt,
       checkInMethod: ci.method,
