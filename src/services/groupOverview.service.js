@@ -35,10 +35,19 @@ const sumOverallStats = (ranking) => {
  * @param {string} [endDate]
  */
 export const getGroupOwnOverview = async (groupId, startDate, endDate) => {
-  const ranking = await getGroupLeaderboard(groupId, startDate, endDate);
+  const [ranking, ownPeriodStats] = await Promise.all([
+    getGroupLeaderboard(groupId, startDate, endDate),
+    getGroupPeriodStats(groupId),
+  ]);
   return {
     ranking,
     overallStats: sumOverallStats(ranking),
+    // The frame-13/15 mint stat card (today/week/month steps) — same 3-window
+    // aggregation already used for the parent/sibling/child relation cards,
+    // just for the group's own id. `overallStats` above (all-time
+    // points/steps/members) stays as-is for the separate frame-10 group-tab
+    // overview screen (GroupOverviewSection) — this is additive, not a replacement.
+    periodStats: { today: ownPeriodStats.today, week: ownPeriodStats.week, month: ownPeriodStats.month },
     top3: ranking.slice(0, 3),
     top5: ranking.slice(0, 5),
   };
