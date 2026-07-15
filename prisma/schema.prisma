@@ -68,6 +68,12 @@ enum EventJoinMode {
   INDIVIDUAL
 }
 
+enum GroupParentRequestStatus {
+  PENDING
+  APPROVED
+  DENIED
+}
+
 // ─── Models ──────────────────────────────────────────────────────────────────
 
 model User {
@@ -107,6 +113,8 @@ model User {
   eventParticipation EventParticipant[]
 
   activityParticipation ActivityParticipant[]
+
+  groupParentRequestsMade GroupParentRequest[]
 
   @@map("users")
 }
@@ -198,7 +206,35 @@ model AppGroup {
   eventParticipants EventParticipant[]
   activityParticipants ActivityParticipant[]
 
+  // Hierarchy request/approve flow (BUILD_PLAN.md Phase 5, gap #3). Two
+  // named relations since a group can appear as either side.
+  outgoingParentRequests GroupParentRequest[] @relation("ChildRequests")
+  incomingParentRequests GroupParentRequest[] @relation("ParentRequests")
+
   @@map("app_groups")
+}
+
+// A coordinator's request for their group to become a child of another
+// group. Normal path: parent group's coordinator (OWNER) approves/denies.
+// Faculty Admin can also override directly via PUT /groups/:id
+// (parentGroupId) without going through this table at all — see
+// group.controller.js updateGroup. "One PENDING request per child" is
+// enforced in groupHierarchy.service.js (guard in code, not a DB
+// constraint — Prisma partial-unique indexes are awkward here).
+model GroupParentRequest {
+  id            String                   @id @default(uuid())
+  childGroupId  String
+  parentGroupId String
+  status        GroupParentRequestStatus @default(PENDING)
+  requestedById String
+  createdAt     DateTime                 @default(now())
+  resolvedAt    DateTime?
+
+  childGroup  AppGroup @relation("ChildRequests", fields: [childGroupId], references: [id], onDelete: Cascade)
+  parentGroup AppGroup @relation("ParentRequests", fields: [parentGroupId], references: [id], onDelete: Cascade)
+  requestedBy User     @relation(fields: [requestedById], references: [id])
+
+  @@map("group_parent_requests")
 }
 
 model GroupMember {

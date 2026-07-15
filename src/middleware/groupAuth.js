@@ -30,6 +30,17 @@ export const requireGroupMember = ({ roles = null, roleMessage = 'Access denied.
       const groupId = req.params.id;
       const userId = req.user.id;
 
+      // Faculty Admin (global role) is a super-admin over every group —
+      // bypasses membership/role checks entirely (BUILD_PLAN.md Phase 5,
+      // "admin god-mode": edit hierarchy directly, remove any group,
+      // override approvals, reassign any coordinator). req.groupMembership
+      // is left null here; handlers that read it (e.g. leaveGroup) must
+      // guard for that instead of assuming a real membership row.
+      if (req.user.role === 'ADMIN') {
+        req.groupMembership = null;
+        return next();
+      }
+
       const membership = await prisma.groupMember.findUnique({
         where: { groupId_userId: { groupId, userId } },
       });

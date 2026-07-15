@@ -1,6 +1,6 @@
 import { Router } from 'express';
 import { body } from 'express-validator';
-import { authenticate } from '../middleware/auth.js';
+import { authenticate, requireRole } from '../middleware/auth.js';
 import { requireGroupMember, requireGroupVisibility } from '../middleware/groupAuth.js';
 import { validate } from '../middleware/validate.js';
 import {
@@ -16,8 +16,26 @@ import {
   leaveGroup,
 } from '../controllers/group.controller.js';
 import { getGroupOverview, getGroupSiblings } from '../controllers/groupOverview.controller.js';
+import {
+  getParentCandidates,
+  requestParent,
+  listIncomingRequests,
+  approveRequest,
+  denyRequest,
+  transferCoordinator,
+  getAdminTree,
+} from '../controllers/groupHierarchy.controller.js';
 
 const router = Router();
+
+/**
+ * @route GET /api/groups/admin/tree
+ * @desc Full group hierarchy (god-mode) — every root group with its
+ *       children and any pending parent-requests nested under the
+ *       requested parent (BUILD_PLAN.md Phase 5, mockup frame 6).
+ * @access Private (Faculty Admin only)
+ */
+router.get('/admin/tree', authenticate, requireRole('ADMIN'), getAdminTree);
 
 /**
  * @route GET /api/groups
@@ -167,6 +185,82 @@ router.get(
   authenticate,
   requireGroupVisibility(['self', 'ancestor']),
   getGroupSiblings
+);
+
+/**
+ * @route GET /api/groups/:id/parent-candidates
+ * @desc Root groups a coordinator can request as :id's parent (mockup
+ *       frame 14 picker sheet).
+ * @access Private (OWNER of :id; Faculty Admin bypasses)
+ */
+router.get(
+  '/:id/parent-candidates',
+  authenticate,
+  requireGroupMember({ roles: ['OWNER'], roleMessage: 'Only the group coordinator can request a parent group' }),
+  getParentCandidates
+);
+
+/**
+ * @route POST /api/groups/:id/parent-request
+ * @desc Request :id to become a child of body.parentGroupId. Needs the
+ *       target parent's coordinator (or an admin) to approve.
+ * @access Private (OWNER of :id)
+ */
+router.post(
+  '/:id/parent-request',
+  authenticate,
+  requireGroupMember({ roles: ['OWNER'], roleMessage: 'Only the group coordinator can request a parent group' }),
+  validate([body('parentGroupId').trim().notEmpty().withMessage('parentGroupId is required')]),
+  requestParent
+);
+
+/**
+ * @route GET /api/groups/:id/parent-requests
+ * @desc Incoming requests where :id is the prospective parent.
+ * @access Private (OWNER of :id; Faculty Admin bypasses)
+ */
+router.get(
+  '/:id/parent-requests',
+  authenticate,
+  requireGroupMember({ roles: ['OWNER'], roleMessage: 'Only the group coordinator can view incoming requests' }),
+  listIncomingRequests
+);
+
+/**
+ * @route POST /api/groups/:id/parent-requests/:requestId/approve
+ * @access Private (OWNER of :id; Faculty Admin bypasses = override-approve)
+ */
+router.post(
+  '/:id/parent-requests/:requestId/approve',
+  authenticate,
+  requireGroupMember({ roles: ['OWNER'], roleMessage: 'Only the group coordinator can resolve requests' }),
+  approveRequest
+);
+
+/**
+ * @route POST /api/groups/:id/parent-requests/:requestId/deny
+ * @access Private (OWNER of :id; Faculty Admin bypasses)
+ */
+router.post(
+  '/:id/parent-requests/:requestId/deny',
+  authenticate,
+  requireGroupMember({ roles: ['OWNER'], roleMessage: 'Only the group coordinator can resolve requests' }),
+  denyRequest
+);
+
+/**
+ * @route POST /api/groups/:id/transfer-coordinator
+ * @desc Move the OWNER role to body.userId. Coordinator-initiated (target
+ *       must already be a member) or admin-override (target need not be).
+ *       Authorization lives in the controller, not requireGroupMember —
+ *       an admin transferring a group they don't belong to would 404 there.
+ * @access Private (current OWNER of :id, or Faculty Admin)
+ */
+router.post(
+  '/:id/transfer-coordinator',
+  authenticate,
+  validate([body('userId').trim().notEmpty().withMessage('userId is required')]),
+  transferCoordinator
 );
 
 export default router;

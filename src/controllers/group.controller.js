@@ -1,5 +1,6 @@
 import prisma from '../config/prisma.js';
 import { generateUniqueCode, generateGroupInviteQR } from '../services/qrcode.service.js';
+import { overrideParent } from '../services/groupHierarchy.service.js';
 
 /**
  * @module GroupController
@@ -154,9 +155,14 @@ export const createGroup = async (req, res) => {
     const userId = req.user.id;
     const { name, description } = req.body;
 
-    // Gap #2 (BUILD_PLAN.md Phase 2): cap = 3 groups per creator. Premium
+    // Gap #2 (BUILD_PLAN.md Phase 2), cap-consistency fix in Phase 5 (gap
+    // #6): cap = 3 groups per user, counted by live OWNER membership
+    // rather than AppGroup.createdById — createdById never moves, but
+    // OWNER does (see groupHierarchy.service.js transferCoordinator), so
+    // counting createdById let a transfer leave the old coordinator's slot
+    // stuck "full" forever and let the new coordinator exceed 3. Premium
     // tier lifting this to 5 is a future decision — ignore for now.
-    const ownedGroupCount = await prisma.appGroup.count({ where: { createdById: userId } });
+    const ownedGroupCount = await prisma.groupMember.count({ where: { userId, role: 'OWNER' } });
     if (ownedGroupCount >= 3) {
       return res.status(409).json({
         success: false,
@@ -242,6 +248,32 @@ export const updateGroup = async (req, res) => {
     const updateData = {};
     if (name !== undefined) updateData.name = name;
     if (description !== undefined) updateData.description = description;
+
+    // BUILD_PLAN.md Phase 5 gap #3, admin override path: only a global
+    // Faculty Admin may set/reassign/detach parentGroupId directly, with
+    // no request/approve flow. A coordinator sending this field is
+    // silently ignored here — they must go through
+    // POST /groups/:id/parent-request instead.
+    if (req.user.role === 'ADMIN' && 'parentGroupId' in req.body) {
+      const newParentId = req.body.parentGroupId || null;
+      if (newParentId === id) {
+        return res.status(400).json({
+          success: false,
+          data: null,
+          message: 'A group cannot be its own parent.',
+        });
+      }
+      if (newParentId) {
+        const parent = await prisma.appGroup.findUnique({ where: { id: newParentId } });
+        if (!parent) {
+          return res.status(404).json({ success: false, data: null, message: 'Parent group not found.' });
+        }
+      }
+      await overrideParent(id, newParentId);
+    } else if (Object.keys(updateData).length === 0) {
+      // Nothing left to update (e.g. a non-admin sent only parentGroupId).
+      return res.status(400).json({ success: false, data: null, message: 'Nothing to update.' });
+    }
 
     const updatedGroup = await prisma.appGroup.update({
       where: { id },
@@ -555,8 +587,18 @@ export const leaveGroup = async (req, res) => {
     const { id: groupId } = req.params;
     const userId = req.user.id;
 
-    // Membership verified by requireGroupMember middleware (404 if not a member).
+    // Membership verified by requireGroupMember middleware (404 if not a
+    // member) — except a global Faculty Admin, who bypasses that check and
+    // has no real membership row here. Admins aren't group members, so
+    // there's nothing for them to "leave".
     const membership = req.groupMembership;
+    if (!membership) {
+      return res.status(400).json({
+        success: false,
+        data: null,
+        message: 'Admins are not members of this group.',
+      });
+    }
 
     if (membership.role === 'OWNER') {
       return res.status(403).json({
