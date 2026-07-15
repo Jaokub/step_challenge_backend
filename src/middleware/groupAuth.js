@@ -104,8 +104,10 @@ export const requireGroupVisibility = (allow) => {
       const groupId = req.params.id;
       const userId = req.user.id;
 
-      const { relation, target } = await resolveGroupAccess(userId, groupId);
-
+      const target = await prisma.appGroup.findUnique({
+        where: { id: groupId },
+        select: { id: true, parentGroupId: true },
+      });
       if (!target) {
         return res.status(404).json({
           success: false,
@@ -113,6 +115,16 @@ export const requireGroupVisibility = (allow) => {
           message: 'Group not found',
         });
       }
+
+      // Faculty Admin (global role) bypasses the relation check entirely —
+      // same god-mode rationale as requireGroupMember's bypass above.
+      if (req.user.role === 'ADMIN') {
+        req.groupRelation = 'ancestor';
+        req.groupNode = target;
+        return next();
+      }
+
+      const { relation } = await resolveGroupAccess(userId, groupId);
 
       if (!relation || !allow.includes(relation)) {
         return res.status(403).json({

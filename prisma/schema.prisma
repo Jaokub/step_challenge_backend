@@ -191,8 +191,11 @@ model AppGroup {
   qrInviteCode String   @unique
   createdById  String
   // Hierarchy: a group may belong to one parent (e.g. Faculty is parent of
-  // Computer/Electrical dept groups). Nullable so existing flat groups are
-  // unaffected. Tree is shallow (2 levels) by design — no recursive queries.
+  // Computer/Electrical dept groups, which may themselves parent lab/unit
+  // groups). Nullable so existing flat groups are unaffected. Bounded depth
+  // (BUILD_PLAN.md Phase 5.1, MAX_GROUP_DEPTH in group.scope.js — default 3
+  // levels), not unlimited — guards live in groupHierarchy.service.js
+  // (wouldCreateCycle / depthWouldExceed), not the schema.
   parentGroupId String?
   createdAt    DateTime @default(now())
   updatedAt    DateTime @updatedAt

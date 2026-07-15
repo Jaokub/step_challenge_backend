@@ -1,4 +1,5 @@
 import prisma from '../config/prisma.js';
+import { MAX_GROUP_DEPTH, getAncestorIds } from './group.scope.js';
 
 /**
  * @module GroupHierarchyService
@@ -9,7 +10,87 @@ import prisma from '../config/prisma.js';
  * groupHierarchy.controller.js (and, for the admin override, in
  * group.controller.js's updateGroup). Never touches pointsLedger.service.js
  * or the points schema.
+ *
+ * Phase 5.1: the tree may be up to MAX_GROUP_DEPTH levels deep, so linking a
+ * child under a parent is guarded by wouldCreateCycle + depthWouldExceed
+ * instead of the old "parent must be a root" rule.
  */
+
+// ─── Multi-level tree guards (Phase 5.1) ───────────────────────────────────
+
+/**
+ * All descendant group ids of `rootId` (excludes the group itself), collected
+ * breadth-first and bounded by MAX_GROUP_DEPTH so a malformed cycle can't spin.
+ * @param {string} rootId
+ * @returns {Promise<string[]>}
+ */
+export const getDescendantIds = async (rootId) => {
+  const result = [];
+  let frontier = [rootId];
+  for (let depth = 0; depth <= MAX_GROUP_DEPTH + 1 && frontier.length; depth++) {
+    const children = await prisma.appGroup.findMany({
+      where: { parentGroupId: { in: frontier } },
+      select: { id: true },
+    });
+    const ids = children.map((c) => c.id).filter((id) => id !== rootId && !result.includes(id));
+    if (ids.length === 0) break;
+    result.push(...ids);
+    frontier = ids;
+  }
+  return result;
+};
+
+/**
+ * Height of the subtree rooted at `groupId` in LEVELS below it (0 = leaf).
+ * @param {string} groupId
+ * @returns {Promise<number>}
+ */
+export const getSubtreeHeight = async (groupId) => {
+  let height = 0;
+  let frontier = [groupId];
+  for (let i = 0; i <= MAX_GROUP_DEPTH + 1; i++) {
+    const children = await prisma.appGroup.findMany({
+      where: { parentGroupId: { in: frontier } },
+      select: { id: true },
+    });
+    if (children.length === 0) break;
+    height += 1;
+    frontier = children.map((c) => c.id);
+  }
+  return height;
+};
+
+/**
+ * True if making `childId` a child of `proposedParentId` would create a cycle
+ * (self-parent, or the parent already lives inside the child's subtree).
+ * @param {string} childId
+ * @param {string} proposedParentId
+ * @returns {Promise<boolean>}
+ */
+export const wouldCreateCycle = async (childId, proposedParentId) => {
+  if (childId === proposedParentId) return true;
+  // If the child is an ancestor of the proposed parent, linking loops.
+  const parentAncestors = await getAncestorIds(proposedParentId);
+  if (parentAncestors.includes(childId)) return true;
+  // If the proposed parent is a descendant of the child, linking loops.
+  const childDescendants = await getDescendantIds(childId);
+  return childDescendants.includes(proposedParentId);
+};
+
+/**
+ * True if linking `childId` under `proposedParentId` would push the deepest
+ * leaf of the child's subtree past MAX_GROUP_DEPTH levels. Levels are 1-based
+ * (a root is level 1).
+ * @param {string} childId
+ * @param {string} proposedParentId
+ * @returns {Promise<boolean>}
+ */
+export const depthWouldExceed = async (childId, proposedParentId) => {
+  const parentLevel = (await getAncestorIds(proposedParentId)).length + 1;
+  const childHeight = await getSubtreeHeight(childId);
+  const deepestLevel = parentLevel + 1 + childHeight; // +1 for the child itself
+  return deepestLevel > MAX_GROUP_DEPTH;
+};
 
 const CHILD_SELECT = { select: { id: true, name: true, _count: { select: { members: true } } } };
 const PARENT_SELECT = { select: { id: true, name: true } };
@@ -35,20 +116,26 @@ export const getPendingRequestForChild = (childGroupId) =>
 
 /**
  * Candidate parent groups for a coordinator's picker sheet (mockup frame
- * 14). Restricted to root groups (parentGroupId null) to keep the tree
- * shallow (2 levels), per the schema's documented design.
+ * 14). Phase 5.1: no longer restricted to root groups — any group may be a
+ * parent as long as it isn't the group itself or one of its descendants
+ * (which would create a cycle). The remaining depth limit is enforced at
+ * request time by depthWouldExceed (a candidate that passes the cycle filter
+ * but would breach MAX_GROUP_DEPTH is still rejected on submit — the picker
+ * may optionally grey those out once the frontend surfaces each candidate's
+ * level).
  */
-export const searchParentCandidates = (excludeGroupId, search) =>
-  prisma.appGroup.findMany({
+export const searchParentCandidates = async (excludeGroupId, search) => {
+  const descendantIds = await getDescendantIds(excludeGroupId);
+  return prisma.appGroup.findMany({
     where: {
-      id: { not: excludeGroupId },
-      parentGroupId: null,
+      id: { notIn: [excludeGroupId, ...descendantIds] },
       ...(search ? { name: { contains: search, mode: 'insensitive' } } : {}),
     },
     include: { _count: { select: { members: true } } },
     orderBy: { name: 'asc' },
     take: 30,
   });
+};
 
 export const createParentRequest = ({ childGroupId, parentGroupId, requestedById }) =>
   prisma.groupParentRequest.create({
@@ -157,11 +244,15 @@ export const transferCoordinator = (groupId, targetUserId) =>
 // ─── Admin god-mode tree (mockup frame 6) ──────────────────────────────────
 
 /**
- * Every root group (parentGroupId null) with its actual children plus any
- * groups that have a PENDING request to join it as parent (shown nested,
- * flagged `pending`, so the admin can see + override-approve/deny in
- * context) — deliberately not a recursive/N-level walk; the schema's tree
- * is shallow (2 levels) by design.
+ * Every root group (parentGroupId null), recursively expanded down to
+ * MAX_GROUP_DEPTH levels (Phase 5.1 — the tree is no longer assumed to be 2
+ * levels). Each node also carries any group with a still-PENDING request to
+ * join it as parent, nested in `children` alongside its real children and
+ * flagged `pending` (so the admin can see + override-approve in context) —
+ * a pending group is intrinsically flagged (it has at most one PENDING
+ * outgoing request, enforced in requestParent), not something computed
+ * per-caller, so it shows up both under its real parent (if any, none for a
+ * fresh standalone group) AND nested under its *requested* parent.
  */
 export const getAdminGroupTrees = async () => {
   const [allGroups, pendingRequests] = await Promise.all([
@@ -179,40 +270,45 @@ export const getAdminGroupTrees = async () => {
     prisma.groupParentRequest.findMany({ where: { status: 'PENDING' } }),
   ]);
 
+  const groupById = new Map(allGroups.map((g) => [g.id, g]));
   const pendingByChildId = new Map(pendingRequests.map((r) => [r.childGroupId, r]));
-  const roots = allGroups.filter((g) => g.parentGroupId === null);
+  const childrenByParentId = new Map();
+  for (const g of allGroups) {
+    if (!g.parentGroupId) continue;
+    if (!childrenByParentId.has(g.parentGroupId)) childrenByParentId.set(g.parentGroupId, []);
+    childrenByParentId.get(g.parentGroupId).push(g);
+  }
 
-  const toNode = (g, pendingReq, pendingParentName) => ({
-    id: g.id,
-    name: g.name,
-    members: g._count.members,
-    coordinator: g.members[0]?.user?.fullName ?? null,
-    pending: !!pendingReq,
-    pendingParent: pendingParentName ?? null,
-    pendingRequestId: pendingReq?.id ?? null,
-  });
+  const buildNode = (group, level) => {
+    const pendingReq = pendingByChildId.get(group.id);
+    const actualChildren = childrenByParentId.get(group.id) ?? [];
+    // Pseudo-children: groups requesting group.id as parent that aren't
+    // already its real child (would otherwise double-list them).
+    const pendingChildren =
+      level < MAX_GROUP_DEPTH
+        ? allGroups.filter((c) => {
+            const r = pendingByChildId.get(c.id);
+            return r && r.parentGroupId === group.id && c.parentGroupId !== group.id;
+          })
+        : [];
+    const childGroups = level >= MAX_GROUP_DEPTH ? [] : [...actualChildren, ...pendingChildren];
 
-  return roots.map((root) => {
-    const actualChildren = allGroups.filter((g) => g.parentGroupId === root.id);
-    const pendingChildren = allGroups.filter((g) => {
-      const req = pendingByChildId.get(g.id);
-      return req && req.parentGroupId === root.id && g.parentGroupId !== root.id;
-    });
     return {
-      root: {
-        id: root.id,
-        name: root.name,
-        kind: actualChildren.length > 0 ? 'PARENT' : 'STANDALONE',
-        members: root._count.members,
-        coordinator: root.members[0]?.user?.fullName ?? null,
-        childCount: actualChildren.length,
-      },
-      children: [
-        ...actualChildren.map((c) => toNode(c, null, null)),
-        ...pendingChildren.map((c) => toNode(c, pendingByChildId.get(c.id), root.name)),
-      ],
+      id: group.id,
+      name: group.name,
+      kind: actualChildren.length > 0 ? 'PARENT' : 'STANDALONE',
+      members: group._count.members,
+      coordinator: group.members[0]?.user?.fullName ?? null,
+      childCount: actualChildren.length,
+      pending: !!pendingReq,
+      pendingParent: pendingReq ? groupById.get(pendingReq.parentGroupId)?.name ?? null : null,
+      pendingRequestId: pendingReq?.id ?? null,
+      children: childGroups.map((c) => buildNode(c, level + 1)),
     };
-  });
+  };
+
+  const roots = allGroups.filter((g) => g.parentGroupId === null);
+  return roots.map((root) => buildNode(root, 1));
 };
 
 export default {
@@ -220,6 +316,10 @@ export default {
   getOwnerMembership,
   getMembership,
   countOwnedGroups,
+  getDescendantIds,
+  getSubtreeHeight,
+  wouldCreateCycle,
+  depthWouldExceed,
   getPendingRequestForChild,
   searchParentCandidates,
   createParentRequest,

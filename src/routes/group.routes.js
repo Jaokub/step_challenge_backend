@@ -15,7 +15,12 @@ import {
   getGroupQRCode,
   leaveGroup,
 } from '../controllers/group.controller.js';
-import { getGroupOverview, getGroupSiblings } from '../controllers/groupOverview.controller.js';
+import {
+  getGroupOverview,
+  getGroupSiblings,
+  getGroupChildren,
+  getGroupHierarchyOverview,
+} from '../controllers/groupOverview.controller.js';
 import {
   getParentCandidates,
   requestParent,
@@ -185,6 +190,32 @@ router.get(
   authenticate,
   requireGroupVisibility(['self', 'ancestor']),
   getGroupSiblings
+);
+
+/**
+ * @route GET /api/groups/:id/children
+ * @desc Direct child groups ranked by this-month steps + an aggregate
+ *       stats bar (BUILD_PLAN.md Phase 5.2, frame 20 full list).
+ * @access Private (members of the group, its ancestors, or Faculty Admin)
+ */
+router.get(
+  '/:id/children',
+  authenticate,
+  requireGroupVisibility(['self', 'ancestor']),
+  getGroupChildren
+);
+
+/**
+ * @route GET /api/groups/:id/hierarchy-overview
+ * @desc Bundled { parent, siblings, children } relation-card data for the
+ *       group-detail screen (BUILD_PLAN.md Phase 5.2, frames 13/15).
+ * @access Private (members of the group; Faculty Admin bypasses)
+ */
+router.get(
+  '/:id/hierarchy-overview',
+  authenticate,
+  requireGroupMember(),
+  getGroupHierarchyOverview
 );
 
 /**

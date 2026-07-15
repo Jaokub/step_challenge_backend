@@ -1,4 +1,9 @@
-import { getGroupOwnOverview, getSiblingOverviews } from '../services/groupOverview.service.js';
+import {
+  getGroupOwnOverview,
+  getSiblingOverviews,
+  getChildRanking,
+  getHierarchyOverview,
+} from '../services/groupOverview.service.js';
 
 /**
  * @module GroupOverviewController
@@ -35,19 +40,19 @@ export const getGroupOverview = async (req, res) => {
 };
 
 /**
- * Sibling groups' overall stats only (never their member ranking). Caller
- * must be a member of the group itself, or a member of its parent group.
- * requireGroupVisibility(['self', 'ancestor']) middleware enforces this.
+ * Sibling groups' stats + Top-3 members preview (never the full ranking).
+ * Caller must be a member of the group itself, or a member of its parent
+ * group. requireGroupVisibility(['self', 'ancestor']) middleware enforces
+ * this.
  * @route GET /api/groups/:id/siblings
  */
 export const getGroupSiblings = async (req, res) => {
   try {
     const { id: groupId } = req.params;
-    const { startDate, endDate } = req.query;
 
     // req.groupNode is attached by requireGroupVisibility.
     const parentGroupId = req.groupNode?.parentGroupId ?? null;
-    const siblings = await getSiblingOverviews(groupId, parentGroupId, startDate, endDate);
+    const siblings = await getSiblingOverviews(groupId, parentGroupId);
 
     return res.json({
       success: true,
@@ -60,6 +65,67 @@ export const getGroupSiblings = async (req, res) => {
       success: false,
       data: null,
       message: 'Failed to fetch sibling group stats',
+    });
+  }
+};
+
+/**
+ * Direct child groups ranked by this-month steps, plus an aggregate stats
+ * bar across all of them. Backs frame 20's full list. Caller must be a
+ * member of the group itself, an ancestor, or Faculty Admin.
+ * requireGroupVisibility(['self', 'ancestor']) (with the admin bypass)
+ * enforces this.
+ * @route GET /api/groups/:id/children
+ */
+export const getGroupChildren = async (req, res) => {
+  try {
+    const { id: groupId } = req.params;
+    const result = await getChildRanking(groupId);
+
+    return res.json({
+      success: true,
+      data: result,
+      message: 'Child group ranking retrieved successfully',
+    });
+  } catch (error) {
+    console.error('Error fetching child group ranking:', error);
+    return res.status(500).json({
+      success: false,
+      data: null,
+      message: 'Failed to fetch child group ranking',
+    });
+  }
+};
+
+/**
+ * Bundled { parent, siblings, children } for the frame-13/15 relation
+ * cards in one authorized call. Caller must be a member of the group
+ * itself (requireGroupMember() — also lets a member read their PARENT's
+ * stats+top3 without a separate 'descendant' visibility relation, since
+ * access is gated on membership of the group whose page this is, not on
+ * membership of the parent).
+ * @route GET /api/groups/:id/hierarchy-overview
+ */
+export const getGroupHierarchyOverview = async (req, res) => {
+  try {
+    const { id: groupId } = req.params;
+    const overview = await getHierarchyOverview(groupId);
+
+    if (!overview) {
+      return res.status(404).json({ success: false, data: null, message: 'Group not found' });
+    }
+
+    return res.json({
+      success: true,
+      data: overview,
+      message: 'Group hierarchy overview retrieved successfully',
+    });
+  } catch (error) {
+    console.error('Error fetching group hierarchy overview:', error);
+    return res.status(500).json({
+      success: false,
+      data: null,
+      message: 'Failed to fetch group hierarchy overview',
     });
   }
 };

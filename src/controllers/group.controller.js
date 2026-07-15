@@ -1,6 +1,7 @@
 import prisma from '../config/prisma.js';
 import { generateUniqueCode, generateGroupInviteQR } from '../services/qrcode.service.js';
-import { overrideParent } from '../services/groupHierarchy.service.js';
+import { overrideParent, wouldCreateCycle, depthWouldExceed } from '../services/groupHierarchy.service.js';
+import { MAX_GROUP_DEPTH } from '../services/group.scope.js';
 
 /**
  * @module GroupController
@@ -267,6 +268,14 @@ export const updateGroup = async (req, res) => {
         const parent = await prisma.appGroup.findUnique({ where: { id: newParentId } });
         if (!parent) {
           return res.status(404).json({ success: false, data: null, message: 'Parent group not found.' });
+        }
+        // Phase 5.1: even an admin override can't create a loop or breach the
+        // depth cap — those would corrupt every tree walk.
+        if (await wouldCreateCycle(id, newParentId)) {
+          return res.status(400).json({ success: false, data: null, message: 'That would create a loop in the group hierarchy.' });
+        }
+        if (await depthWouldExceed(id, newParentId)) {
+          return res.status(400).json({ success: false, data: null, message: `That would make the group tree deeper than ${MAX_GROUP_DEPTH} levels.` });
         }
       }
       await overrideParent(id, newParentId);

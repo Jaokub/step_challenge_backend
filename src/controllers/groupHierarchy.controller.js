@@ -9,7 +9,10 @@ import {
   resolveRequest,
   transferCoordinator as transferCoordinatorService,
   getAdminGroupTrees,
+  wouldCreateCycle,
+  depthWouldExceed,
 } from '../services/groupHierarchy.service.js';
+import { MAX_GROUP_DEPTH } from '../services/group.scope.js';
 
 /**
  * @module GroupHierarchyController
@@ -66,8 +69,14 @@ export const requestParent = async (req, res, next) => {
 
     const parent = await getGroup(parentGroupId);
     if (!parent) return fail(res, 404, 'Parent group not found.');
-    if (parent.parentGroupId) {
-      return fail(res, 400, 'That group already has a parent — the tree only supports two levels.');
+
+    // Phase 5.1: multi-level tree — replace the old "parent must be a root"
+    // rule with cycle + depth guards.
+    if (await wouldCreateCycle(childGroupId, parentGroupId)) {
+      return fail(res, 400, 'That would create a loop in the group hierarchy.');
+    }
+    if (await depthWouldExceed(childGroupId, parentGroupId)) {
+      return fail(res, 400, `That would make the group tree deeper than ${MAX_GROUP_DEPTH} levels.`);
     }
 
     const existing = await getPendingRequestForChild(childGroupId);
@@ -105,6 +114,18 @@ const resolve = (status) => async (req, res, next) => {
     if (!request) return fail(res, 404, 'Request not found.');
     if (request.parentGroupId !== parentGroupId) return fail(res, 404, 'Request not found.');
     if (request.status !== 'PENDING') return fail(res, 409, 'This request has already been resolved.');
+
+    // Re-validate at approval time: the tree may have changed between request
+    // and approval (Phase 5.1), so a link that was fine when requested could
+    // now create a cycle or breach the depth cap.
+    if (status === 'APPROVED') {
+      if (await wouldCreateCycle(request.childGroupId, request.parentGroupId)) {
+        return fail(res, 409, 'Approving this would now create a loop in the group hierarchy.');
+      }
+      if (await depthWouldExceed(request.childGroupId, request.parentGroupId)) {
+        return fail(res, 409, `Approving this would now make the tree deeper than ${MAX_GROUP_DEPTH} levels.`);
+      }
+    }
 
     const updated = await resolveRequest(requestId, status);
     return ok(res, updated, status === 'APPROVED' ? 'Request approved.' : 'Request denied.');

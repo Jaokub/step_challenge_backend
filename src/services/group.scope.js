@@ -2,13 +2,24 @@ import prisma from '../config/prisma.js';
 
 /**
  * @module GroupScope
- * @description Resolves a viewer's relationship to a target group in the
- * (shallow, 2-level) group hierarchy: self / ancestor (parent looking at a
- * descendant) / sibling (shares the same parent) / none.
+ * @description Resolves a viewer's relationship to a target group in the group
+ * hierarchy: self / ancestor (any group up the chain looking at a descendant) /
+ * sibling (shares the same immediate parent) / none.
  *
- * Tree is only 2 levels deep (Faculty -> Dept), so plain findMany calls are
- * enough — no recursive CTE needed.
+ * BUILD_PLAN.md Phase 5.1: the tree used to be a fixed 2 levels (Faculty ->
+ * Dept). It now supports up to `MAX_GROUP_DEPTH` levels, so "ancestor" means
+ * *any* group on the target's parent chain, not just its immediate parent. The
+ * chain is walked one level at a time (bounded by MAX_GROUP_DEPTH, so a handful
+ * of point-lookups — no recursive CTE). Sibling stays "shares the target's
+ * IMMEDIATE parent".
  */
+
+/**
+ * Maximum hierarchy depth measured in LEVELS (root = level 1). Default 3 =>
+ * Faculty -> Dept -> lab. ⚠️ BUILD_PLAN.md Phase 5.1 marks the exact value as
+ * advisor-gated — tune here; every guard reads this constant.
+ */
+export const MAX_GROUP_DEPTH = 3;
 
 /**
  * @param {string} groupId
@@ -19,6 +30,29 @@ export const getGroupNode = async (groupId) => {
     where: { id: groupId },
     select: { id: true, parentGroupId: true },
   });
+};
+
+/**
+ * All ancestor group ids of `groupId`, nearest-parent first (excludes the
+ * group itself). Walks `parentGroupId` upward, capped at `MAX_GROUP_DEPTH + 1`
+ * iterations so a malformed cycle can never spin forever.
+ * @param {string} groupId
+ * @returns {Promise<string[]>}
+ */
+export const getAncestorIds = async (groupId) => {
+  const ancestors = [];
+  let currentId = groupId;
+  for (let i = 0; i <= MAX_GROUP_DEPTH + 1; i++) {
+    const node = await prisma.appGroup.findUnique({
+      where: { id: currentId },
+      select: { parentGroupId: true },
+    });
+    if (!node || !node.parentGroupId) break;
+    if (ancestors.includes(node.parentGroupId)) break; // cycle safety net
+    ancestors.push(node.parentGroupId);
+    currentId = node.parentGroupId;
+  }
+  return ancestors;
 };
 
 /**
@@ -38,8 +72,10 @@ export const getViewerGroupIds = async (userId) => {
  * Resolve how `userId` relates to `targetGroupId`.
  *
  * - 'self'     — userId is a member of targetGroupId itself.
- * - 'ancestor' — userId is a member of targetGroupId's parent (sees everything).
- * - 'sibling'  — userId is a member of a group that shares targetGroupId's parent.
+ * - 'ancestor' — userId is a member of ANY group on targetGroupId's parent
+ *                chain (immediate parent, grandparent, …) — sees everything.
+ * - 'sibling'  — userId is a member of a group that shares targetGroupId's
+ *                IMMEDIATE parent.
  * - null       — no relationship; access denied.
  *
  * @param {string} userId
@@ -57,8 +93,14 @@ export const resolveGroupAccess = async (userId, targetGroupId) => {
     return { relation: 'self', target };
   }
 
-  if (target.parentGroupId && viewerGroupIdSet.has(target.parentGroupId)) {
-    return { relation: 'ancestor', target };
+  // Ancestor: viewer belongs to any group up the target's parent chain, not
+  // just the immediate parent (Phase 5.1 — a Faculty coordinator sees any
+  // dept/lab beneath them, at any depth).
+  if (target.parentGroupId) {
+    const ancestorIds = await getAncestorIds(targetGroupId);
+    if (ancestorIds.some((id) => viewerGroupIdSet.has(id))) {
+      return { relation: 'ancestor', target };
+    }
   }
 
   if (target.parentGroupId) {
@@ -106,7 +148,9 @@ export const getChildGroups = async (groupId) => {
 };
 
 export default {
+  MAX_GROUP_DEPTH,
   getGroupNode,
+  getAncestorIds,
   getViewerGroupIds,
   resolveGroupAccess,
   getSiblingGroups,
