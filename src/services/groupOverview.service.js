@@ -76,21 +76,23 @@ export const getSiblingOverviews = async (groupId, parentGroupId) => {
  * @param {Map<string, object>} periodStats - from getGroupsPeriodSteps, must already include `group.id`.
  */
 const buildGroupPreview = async (group, periodStats) => {
-  const ranking = await getGroupLeaderboard(group.id);
   const stats = periodStats.get(group.id);
+  // Real per-member THIS-MONTH steps for the Top-3 preview, so the member
+  // rows match the card header (period steps) and the child card (also
+  // step-based) instead of showing all-time points. getGroupLeaderboard only
+  // populates row.steps when a date window is passed, and it sorts by points,
+  // so pass the month window and re-sort by steps.
+  const { month } = periodWindows();
+  const ranking = await getGroupLeaderboard(group.id, month.gte, month.lt);
+  const top3 = [...ranking]
+    .sort((a, b) => (b.steps ?? 0) - (a.steps ?? 0))
+    .slice(0, 3)
+    .map((row, i) => ({ rank: i + 1, name: row.fullName, steps: row.steps ?? 0 }));
   return {
     groupId: group.id,
     groupName: group.name,
     overallStats: { today: stats.today, week: stats.week, month: stats.month, memberCount: stats.memberCount },
-    // Ranked by the same points-based order as the rest of the app's group
-    // rankings (getGroupLeaderboard sorts by points, not steps); `steps`
-    // falls back to `points`/`totalPoints` exactly like the own-group
-    // ranking rows on /group/[id] already do when no date range is given.
-    top3: ranking.slice(0, 3).map((row, i) => ({
-      rank: i + 1,
-      name: row.fullName,
-      steps: row.steps ?? row.points ?? row.totalPoints ?? 0,
-    })),
+    top3,
   };
 };
 
