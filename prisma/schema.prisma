@@ -175,6 +175,17 @@ model CheckIn {
   latitude    Float?
   longitude   Float?
   method      CheckInMethod @default(QR)
+  // Step-gated activity points (ADR-001, BUILD_PLAN.md Phase 7). Baseline
+  // snapshot: the user's known cumulative steps on the check-in day, taken
+  // at check-in time. Null for attendance-only check-ins (expectedSteps
+  // null) and for legacy rows predating this feature.
+  stepsAtCheckIn  Int?
+  // Set when activity.points has actually been paid for this check-in.
+  // Attendance-only: set immediately at check-in (unchanged behaviour).
+  // Step-gated: null until services/activityAward.service.js confirms the
+  // post-check-in step delta reached activity.expectedSteps. Drives both
+  // award idempotency and correct cancellation reversal (see cancelCheckIn).
+  pointsAwardedAt DateTime?
 
   // Relations
   user     User     @relation(fields: [userId], references: [id])

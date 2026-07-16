@@ -8,6 +8,10 @@ import prisma from '../config/prisma.js';
 import pointsService from './points.service.js';
 import { calculateCheckInStreak } from './streak.service.js';
 import { applyPoints } from './pointsLedger.service.js';
+// ADR-001 / BUILD_PLAN.md Phase 7 — the ONLY hook this frozen file gets for
+// step-gated activity points. All real logic lives in
+// activityAward.service.js; this is a single call after the record upsert.
+import { evaluateActivityAwardsForDate } from './activityAward.service.js';
 
 /**
  * @typedef {Object} HealthMetrics
@@ -25,7 +29,9 @@ import { applyPoints } from './pointsLedger.service.js';
  * @param {Date} normalizedDate - UTC-normalised date (no time component).
  * @param {string} source - One of GOOGLE_HEALTH | APPLE_HEALTH | MANUAL.
  * @param {HealthMetrics} metrics
- * @returns {Promise<Object>} The upserted health record.
+ * @returns {Promise<{record: Object, awardedActivityIds: string[]}>}
+ *   `record` is the upserted health record; `awardedActivityIds` are any
+ *   step-gated activities newly paid out by this sync (ADR-001 Phase 7).
  */
 export const syncHealthRecord = async (userId, normalizedDate, source, metrics) => {
   const { steps, calories, distanceKm, activeMinutes } = metrics;
@@ -82,7 +88,16 @@ export const syncHealthRecord = async (userId, normalizedDate, source, metrics) 
       refId: source,
     });
 
-    return upserted;
+    // Step-gated activity points (ADR-001): re-evaluate any unpaid,
+    // step-gated CheckIn whose window contains this date now that fresh
+    // steps have landed. Runs inside this same transaction so an award can
+    // fire atomically with the sync that earned it. The returned ids are
+    // passed straight through to the caller (health.controller.js) — PR 2's
+    // foreground polling reads them to fire a celebration toast without a
+    // separate request. No new decision logic added to this frozen file.
+    const awardedActivityIds = await evaluateActivityAwardsForDate(userId, normalizedDate, tx);
+
+    return { record: upserted, awardedActivityIds };
   });
 };
 

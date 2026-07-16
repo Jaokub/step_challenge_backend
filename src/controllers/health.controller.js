@@ -47,13 +47,18 @@ export const syncHealthData = async (req, res) => {
       });
     }
 
-    const healthRecord = await syncHealthRecord(userId, normalizedDate, source, {
+    const { record, awardedActivityIds } = await syncHealthRecord(userId, normalizedDate, source, {
       steps, calories, distanceKm, activeMinutes,
     });
 
+    // ADR-001 / BUILD_PLAN.md Phase 7 PR 2: newly-awarded step-gated
+    // activity ids ride along on the sync response so the mobile foreground
+    // poller (useActiveEventPolling) can fire a celebration toast without a
+    // second request. Empty array on every ordinary sync — additive, no
+    // existing consumer of `data` breaks.
     return res.status(200).json({
       success: true,
-      data: healthRecord,
+      data: { ...record, awardedActivityIds },
       message: 'Health data synced successfully',
     });
   } catch (error) {
@@ -82,7 +87,7 @@ export const syncFromWebhook = async (req, res) => {
     const normalizedDate = thaiDayTag();
     const healthSource = source || 'APPLE_HEALTH';
 
-    const healthRecord = await syncHealthRecord(user.id, normalizedDate, healthSource, {
+    const { record, awardedActivityIds } = await syncHealthRecord(user.id, normalizedDate, healthSource, {
       steps: parseHealthNumber(steps),
       calories: parseHealthNumber(calories),
       distanceKm: parseHealthNumber(distanceKm),
@@ -91,7 +96,7 @@ export const syncFromWebhook = async (req, res) => {
 
     return res.status(200).json({
       success: true,
-      data: healthRecord,
+      data: { ...record, awardedActivityIds },
       message: 'Health data synced via webhook successfully',
     });
   } catch (error) {
