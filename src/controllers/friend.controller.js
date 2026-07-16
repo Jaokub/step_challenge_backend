@@ -223,3 +223,39 @@ export const getPendingRequests = async (req, res) => {
     return res.status(500).json({ success: false, message: 'Failed to retrieve pending requests' });
   }
 };
+
+/**
+ * @desc    Get pending friend requests SENT by current user (awaiting the
+ *          other person's response) — mirrors getPendingRequests but the
+ *          other direction. Powers the "คำขอที่รอ" tab of the add-friend
+ *          sheet so a coordinator/user can see and cancel their own
+ *          outstanding requests instead of only seeing incoming ones.
+ * @route   GET /api/v1/friends/sent
+ * @access  Private
+ */
+export const getSentRequests = async (req, res) => {
+  try {
+    const userId = req.user.id;
+
+    const requests = await prisma.friendship.findMany({
+      where: {
+        userId,
+        status: 'PENDING'
+      },
+      include: {
+        friend: { select: { id: true, fullName: true, avatarUrl: true, department: true } }
+      },
+      orderBy: { createdAt: 'desc' }
+    });
+
+    return res.status(200).json({
+      success: true,
+      data: requests,
+      message: 'Sent requests retrieved successfully'
+    });
+
+  } catch (error) {
+    console.error('getSentRequests error:', error);
+    return res.status(500).json({ success: false, message: 'Failed to retrieve sent requests' });
+  }
+};

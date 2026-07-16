@@ -5,7 +5,8 @@ import {
   acceptFriendRequest,
   removeFriend,
   getFriendsList,
-  getPendingRequests
+  getPendingRequests,
+  getSentRequests
 } from '../controllers/friend.controller.js';
 import { authenticate } from '../middleware/auth.js';
 import { validate } from '../middleware/validate.js';
@@ -26,6 +27,12 @@ router.get('/', getFriendsList);
  * Get pending received friend requests
  */
 router.get('/requests', getPendingRequests);
+
+/**
+ * GET /friends/sent
+ * Get pending friend requests sent by the current user (outgoing)
+ */
+router.get('/sent', getSentRequests);
 
 /**
  * POST /friends/request
