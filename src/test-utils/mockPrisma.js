@@ -19,12 +19,15 @@ export const createMockPrisma = () => {
     healthRecord: {
       groupBy: vi.fn(),
       findMany: vi.fn(),
+      findUnique: vi.fn(),
+      upsert: vi.fn(),
     },
     user: {
       findMany: vi.fn(),
       findUnique: vi.fn(),
       create: vi.fn(),
       update: vi.fn(),
+      count: vi.fn(),
     },
     friendship: {
       findMany: vi.fn(),
@@ -60,7 +63,10 @@ export const createMockPrisma = () => {
     },
     checkIn: {
       findUnique: vi.fn(),
+      findFirst: vi.fn(),
       findMany: vi.fn(),
+      create: vi.fn(),
+      update: vi.fn(),
       updateMany: vi.fn(),
       delete: vi.fn(),
       count: vi.fn(),
@@ -70,6 +76,7 @@ export const createMockPrisma = () => {
       findMany: vi.fn(),
       create: vi.fn(),
       update: vi.fn(),
+      delete: vi.fn(),
       groupBy: vi.fn(),
       count: vi.fn(),
     },

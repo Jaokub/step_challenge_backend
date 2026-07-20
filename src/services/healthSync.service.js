@@ -34,7 +34,8 @@ import { evaluateActivityAwardsForDate } from './activityAward.service.js';
  *   step-gated activities newly paid out by this sync (ADR-001 Phase 7).
  */
 export const syncHealthRecord = async (userId, normalizedDate, source, metrics) => {
-  const { steps, calories, distanceKm, activeMinutes } = metrics;
+  // Drop unusable values before anything reads them — see sanitizeMetrics.
+  const { steps, calories, distanceKm, activeMinutes } = sanitizeMetrics(metrics);
 
   // Streak lookup stays outside the transaction (read-only, non-critical).
   const currentStreak = await calculateCheckInStreak(userId);
@@ -43,7 +44,7 @@ export const syncHealthRecord = async (userId, normalizedDate, source, metrics) 
   // syncs can't both read the same "old" record and double-award the delta.
   return prisma.$transaction(async (tx) => {
     const existingRecord = await tx.healthRecord.findUnique({
-      where: { userId_recordDate_source: { userId, recordDate: normalizedDate, source } },
+      where: { userId_recordDate: { userId, recordDate: normalizedDate } },
     });
 
     const oldMetrics = {
@@ -61,12 +62,25 @@ export const syncHealthRecord = async (userId, normalizedDate, source, metrics) 
     const deltaPoints = pointsService.calculatePointsDelta(oldMetrics, newMetrics, currentStreak);
 
     const upserted = await tx.healthRecord.upsert({
-      where: { userId_recordDate_source: { userId, recordDate: normalizedDate, source } },
+      // Keyed on [user, day] only — a user has at most ONE health row per
+      // day regardless of which device reported it. When the key included
+      // `source`, a day could hold a GOOGLE_HEALTH row AND a MANUAL row, and
+      // every consumer then disagreed about what that day's step count was:
+      // `aggregateByDate` and the leaderboard SUMMED the rows (inflating the
+      // figure a user is ranked on) while `activityAward.dailyMaxSteps` took
+      // the MAX. Collapsing to one row per day makes all three agree by
+      // construction rather than by convention.
+      where: { userId_recordDate: { userId, recordDate: normalizedDate } },
       update: {
         steps: steps !== undefined ? steps : undefined,
         calories: calories !== undefined ? calories : undefined,
         distanceKm: distanceKm !== undefined ? distanceKm : undefined,
         activeMinutes: activeMinutes !== undefined ? activeMinutes : undefined,
+        // Record which device most recently reported this day. Last writer
+        // wins, consistent with how a repeat sync from the SAME source has
+        // always behaved (it replaces the day's figures rather than adding
+        // to them, including downward corrections).
+        source,
         createdAt: new Date(),
       },
       create: {
@@ -102,7 +116,14 @@ export const syncHealthRecord = async (userId, normalizedDate, source, metrics) 
 };
 
 /**
- * Aggregate health records by date, combining multiple sources per day.
+ * Aggregate health records by date.
+ *
+ * Since the [user, day] unique key there is now at most one row per day, so
+ * this no longer combines anything across sources — the summing below is
+ * effectively a pass-through and is kept only so a stray duplicate (e.g. a
+ * row predating the dedupe migration) doesn't silently disappear from a
+ * chart. It must NOT be relied on to merge sources: that summing was the
+ * step-inflation bug this key change removed.
  *
  * @param {Array<Object>} records - Array of health records from Prisma.
  * @returns {Object} Map of date string → aggregated metrics.
@@ -124,10 +145,50 @@ export const aggregateByDate = (records) => {
 
 /**
  * Parse a numeric value that may be a string with commas (e.g. from iOS Shortcuts).
+ *
+ * Returns `undefined` for anything that isn't a usable non-negative number.
+ * `undefined` specifically means "this metric was not reported", which the
+ * upsert below treats as *leave the stored value alone* — the safe outcome
+ * for junk input, and importantly NOT the same as 0 (which would overwrite a
+ * real figure with zero).
+ *
+ * Previously this returned `NaN` for junk. That looked harmless because the
+ * upsert's `create` branch runs `steps || 0`, coercing it — but the `update`
+ * branch (every repeat sync of the same day) has no such coercion, so `NaN`
+ * reached both the `HealthRecord` write and, via `calculatePointsDelta`, the
+ * points ledger. Negatives passed straight through for the same reason.
+ *
  * @param {any} val
  * @returns {number|undefined}
  */
-export const parseHealthNumber = (val) =>
-  val !== undefined && val !== null ? Number(String(val).replace(/,/g, '')) : undefined;
+export const parseHealthNumber = (val) => {
+  if (val === undefined || val === null) return undefined;
+  const parsed = Number(String(val).replace(/,/g, ''));
+  // Rejects NaN and ±Infinity. A health metric can't be negative, and a
+  // device reporting one is malfunctioning — drop it rather than write it.
+  if (!Number.isFinite(parsed) || parsed < 0) return undefined;
+  return parsed;
+};
+
+/**
+ * Last line of defence before a metric reaches the database.
+ *
+ * `parseHealthNumber` guards the webhook path, but `POST /health/sync` passes
+ * its body through after express-validator, and a future caller could pass
+ * anything. Rather than trust every call site, the write path itself drops
+ * unusable values — an unusable metric becomes `undefined` ("not reported")
+ * and the stored value is left untouched.
+ */
+const sanitizeMetrics = (metrics = {}) => {
+  const out = {};
+  for (const key of ['steps', 'calories', 'distanceKm', 'activeMinutes']) {
+    const value = metrics[key];
+    if (value === undefined || value === null) continue;
+    const num = Number(value);
+    if (!Number.isFinite(num) || num < 0) continue;
+    out[key] = num;
+  }
+  return out;
+};
 
 export default { syncHealthRecord, aggregateByDate, parseHealthNumber };

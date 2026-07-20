@@ -41,12 +41,12 @@ const getArg = (flag) => {
 };
 
 const BASE_URL = process.env.BASE_URL || 'https://step-challenge-backend.vercel.app/api/v1';
-const email = getArg('--email') || process.env.SMOKE_EMAIL;
-const password = getArg('--password') || process.env.SMOKE_PASSWORD;
+const email = getArg('--email') || process.env.SMOKE_EMAIL_STAFF;
+const password = getArg('--password') || process.env.SMOKE_PASSWORD_STAFF;
 
 if (!email || !password) {
   console.error('Usage: node scripts/probe-events.mjs --email <email> --password <password>');
-  console.error('(or set SMOKE_EMAIL / SMOKE_PASSWORD env vars)');
+  console.error('(or set SMOKE_EMAIL_STAFF / SMOKE_PASSWORD_STAFF env vars)');
   process.exit(1);
 }
 

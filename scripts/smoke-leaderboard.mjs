@@ -33,12 +33,12 @@ const getArg = (flag) => {
 };
 
 const BASE_URL = 'https://step-challenge-backend.vercel.app/api/v1';
-const email = getArg('--email') || process.env.SMOKE_EMAIL;
-const password = getArg('--password') || process.env.SMOKE_PASSWORD;
+const email = getArg('--email') || process.env.SMOKE_EMAIL_ADMIN;
+const password = getArg('--password') || process.env.SMOKE_PASSWORD_ADMIN;
 
 if (!email || !password) {
   console.error('Usage: node scripts/smoke-leaderboard.mjs --email <email> --password <password>');
-  console.error('(or set SMOKE_EMAIL / SMOKE_PASSWORD env vars)');
+  console.error('(or set SMOKE_EMAIL_ADMIN / SMOKE_PASSWORD_ADMIN env vars)');
   process.exit(1);
 }
 

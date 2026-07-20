@@ -311,6 +311,26 @@ export const updateActivity = async (req, res) => {
       });
     }
 
+    // Date-order guard. `POST /activities` enforces this twice (route
+    // validator + controller), but `PUT /:id` has NO validator middleware at
+    // all, so before this check an admin could edit an activity into an
+    // endDate-before-startDate state. That window is what step-gated awards
+    // (ADR-001) and every period aggregation are computed over, so an
+    // inverted range silently breaks them rather than erroring. Compare
+    // against the EXISTING values so a partial update — sending only
+    // startDate, or only endDate — is validated against what the row will
+    // actually end up with, not just against whatever happened to be in the
+    // request body. Added 2026-07-19.
+    const nextStart = startDate !== undefined ? new Date(startDate) : existing.startDate;
+    const nextEnd = endDate !== undefined ? new Date(endDate) : existing.endDate;
+    if (nextEnd < nextStart) {
+      return res.status(400).json({
+        success: false,
+        data: null,
+        message: 'endDate cannot be before startDate',
+      });
+    }
+
     const updateData = {};
     if (title !== undefined) updateData.title = title;
     if (description !== undefined) updateData.description = description;
@@ -330,7 +350,20 @@ export const updateActivity = async (req, res) => {
     }
     if (maxParticipants !== undefined) updateData.maxParticipants = maxParticipants ? parseInt(maxParticipants, 10) : null;
     if (imageUrl !== undefined) updateData.imageUrl = imageUrl;
-    if (points !== undefined) updateData.points = parseInt(points, 10);
+    // Guard the parse: an empty-string `points` (what a cleared form field
+    // sends) would otherwise become NaN and make Prisma throw a 500 instead
+    // of a useful 400. `createActivity` already treats falsy points as 0.
+    if (points !== undefined) {
+      const parsedPoints = points === null || points === '' ? 0 : parseInt(points, 10);
+      if (Number.isNaN(parsedPoints)) {
+        return res.status(400).json({
+          success: false,
+          data: null,
+          message: 'points must be a number',
+        });
+      }
+      updateData.points = parsedPoints;
+    }
     if (expectedSteps !== undefined) updateData.expectedSteps = (expectedSteps === null || expectedSteps === '') ? null : parseInt(expectedSteps, 10);
     if (totalDistance !== undefined) updateData.totalDistance = (totalDistance === null || totalDistance === '') ? null : parseFloat(totalDistance);
 

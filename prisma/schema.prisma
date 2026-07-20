@@ -280,7 +280,14 @@ model HealthRecord {
   // Relations
   user User @relation(fields: [userId], references: [id])
 
-  @@unique([userId, recordDate, source])
+  // One row per user per day, regardless of which device reported it.
+  // `source` is retained as a column (which device last reported) but is NOT
+  // part of the key: when it was, a single day could hold one row per source
+  // and consumers disagreed about that day's step count — aggregateByDate
+  // and the leaderboard SUMMED them (inflating the figure users are ranked
+  // on) while activityAward.dailyMaxSteps took the MAX.
+  // See migration 20260720120000_health_record_one_row_per_day.
+  @@unique([userId, recordDate])
   @@map("health_records")
 }
 
