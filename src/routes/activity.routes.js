@@ -102,9 +102,16 @@ router.post(
       .withMessage('End date is required')
       .isISO8601()
       .withMessage('End date must be a valid ISO 8601 date')
+      // `<` not `<=`: a single-day activity legitimately has endDate ===
+      // startDate, and SINGLE_DAY is the create form's DEFAULT duration (it
+      // mirrors startDate into endDate). The old `<=` rejected that, so the
+      // form's default state could never be submitted — while the controller
+      // and the mobile-side validation both allowed `>=`. This validator was
+      // the odd one out and it runs first. Fixed 2026-07-19; covered by
+      // controllers/activity.controller.test.js.
       .custom((value, { req }) => {
-        if (new Date(value) <= new Date(req.body.startDate)) {
-          throw new Error('End date must be after start date');
+        if (new Date(value) < new Date(req.body.startDate)) {
+          throw new Error('End date must not be before start date');
         }
         return true;
       }),

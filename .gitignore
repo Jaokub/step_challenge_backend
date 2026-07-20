@@ -2,9 +2,12 @@
 node_modules/
 
 # Environment variables
-.env
-.env.local
-.env.*.local
+# `.env*` is deliberately broad: the old list (.env, .env.local, .env.*.local)
+# did NOT cover .env.production / .env.development, so a file holding the real
+# Neon DATABASE_URL or JWT secret could have been committed by accident.
+# .env.example is the one file that must stay tracked.
+.env*
+!.env.example
 
 # Build output
 dist/
@@ -32,9 +35,36 @@ Thumbs.db
 # Coverage
 coverage/
 
+# Vitest config's transient ESM bundle (regenerated every run)
+vitest.config.js.timestamp-*.mjs
+
 # Temp
 tmp/
 temp/
+
+# Secrets / credentials
+# Nothing here is committed today — these are guards, since a leaked key in
+# git history is not fixable by deleting the file later.
+*.pem
+*.key
+*.crt
+*.p12
+*.pfx
+# npm auth tokens live here
+.npmrc
+
+# Vercel
+# `vercel link` / `vercel dev` writes .vercel/project.json with the org +
+# project IDs. Not a secret exactly, but machine-local and not useful to peers.
+.vercel/
+
+# Build tool caches
+.cache/
+.turbo/
+
+# Local scratch output — keep ad-hoc script dumps out of the repo
+*.csv.local
+scripts/out/
 
 # Other
 migrate_to_neon.js

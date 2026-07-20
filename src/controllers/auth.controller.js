@@ -273,9 +273,20 @@ export async function changePassword(req, res) {
  * POST /auth/google
  * Sign in (or sign up) with a Google ID token obtained on-device.
  * - Existing googleId -> log in.
- * - No googleId but email matches an existing user -> link the account.
+ * - No googleId but email matches an existing user -> link the account,
+ *   but ONLY if Google says the email is verified (see below).
  * - No match at all -> create a new STAFF user (passwordHash + department
  *   null; mobile prompts the user to fill in department via edit-profile).
+ *
+ * Auto-link requires `identity.emailVerified` (BUILD_PLAN.md Phase 9, Task 4).
+ * Without that check, anyone who can get Google to mint a token carrying an
+ * unverified `email` claim matching a staff account would be handed that
+ * account. Google normally only issues `email_verified: false` for a narrow
+ * set of federated/Workspace cases, so this is a theoretical rather than
+ * practical hole here — but it is the difference between "an attacker needs a
+ * password" and "an attacker needs a matching email string", which is worth
+ * five lines. Sign-UP is unaffected: a brand-new account with an unverified
+ * email grants access to nothing that existed before.
  */
 export async function googleSignIn(req, res) {
   try {
@@ -298,6 +309,17 @@ export async function googleSignIn(req, res) {
       const existingByEmail = await prisma.user.findUnique({ where: { email: identity.email } });
 
       if (existingByEmail) {
+        // Linking hands over an account that already exists, so it needs a
+        // stronger claim than "Google echoed this email back at us".
+        if (!identity.emailVerified) {
+          return res.status(403).json({
+            success: false,
+            data: null,
+            message:
+              'This email is already registered but your Google account has not verified it. Sign in with your password instead.',
+          });
+        }
+
         // Link the Google identity to the existing email/password account.
         user = await prisma.user.update({
           where: { id: existingByEmail.id },

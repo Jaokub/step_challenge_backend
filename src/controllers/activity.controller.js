@@ -212,16 +212,15 @@ export const createActivity = async (req, res) => {
       });
     }
 
-    // At least one target (expected steps or total distance) must be provided
+    // Targets are OPTIONAL. Per ADR-001 D2, `expectedSteps` is the single
+    // source of truth for activity type: set = step-gated, null =
+    // attendance-only (a seminar or training that pays out on check-in
+    // alone). An earlier guard here required at least one of
+    // expectedSteps/totalDistance and so made attendance-only activities
+    // impossible to create — even though the admin form offers ATTENDANCE as
+    // an explicit type. Removed 2026-07-19; see activity.controller.test.js.
     const hasSteps = expectedSteps !== undefined && expectedSteps !== null && expectedSteps !== '';
     const hasDistance = totalDistance !== undefined && totalDistance !== null && totalDistance !== '';
-    if (!hasSteps && !hasDistance) {
-      return res.status(400).json({
-        success: false,
-        data: null,
-        message: 'Provide at least one target: expectedSteps or totalDistance',
-      });
-    }
 
     // endDate must not be before startDate
     if (new Date(endDate) < new Date(startDate)) {
