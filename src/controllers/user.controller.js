@@ -197,44 +197,70 @@ export async function updateUserRole(req, res) {
 
 /**
  * GET /users/search
- * Search users by name or email (excluding self) to add as friends.
- * Query params: q (search query).
+ * Search users by name, email, or ID (excluding self) to add as friends.
+ * `q` is now optional — an empty/omitted query returns a paginated "browse
+ * all colleagues" list instead of 400ing, which powers the add-friend
+ * sheet's "ค้นหา" tab before anything has been typed (it used to show a
+ * static "type to search" placeholder with no way to browse).
+ * Every returned user carries `friendshipStatus` relative to the caller
+ * (NONE / PENDING_SENT / PENDING_RECEIVED / FRIENDS) so the client can
+ * render the right button state (Add / Pending / Already friends) without
+ * a second round-trip.
+ * Query params: q (optional), page (default 1), limit (default 20, max 50).
  */
 export async function searchUsers(req, res) {
   try {
-    const q = req.query.q?.trim();
-    if (!q) {
-      return res.status(400).json({
-        success: false,
-        data: null,
-        message: 'Search query "q" is required.',
-      });
-    }
-
+    const q = req.query.q?.trim() || '';
     const userId = req.user.id;
+    const page = Math.max(parseInt(req.query.page, 10) || 1, 1);
+    const limit = Math.min(Math.max(parseInt(req.query.limit, 10) || 20, 1), 50);
 
-    // Search users by email or fullName, excluding the current user
-    const users = await prisma.user.findMany({
-      where: {
-        id: { not: userId },
-        OR: [
-          { fullName: { contains: q, mode: 'insensitive' } },
-          { email: { contains: q, mode: 'insensitive' } },
-        ],
-      },
-      select: {
-        id: true,
-        fullName: true,
-        email: true,
-        department: true,
-        avatarUrl: true,
-      },
-      take: 20, // Limit search results to 20
-    });
+    const where = {
+      id: { not: userId },
+      ...(q
+        ? {
+            OR: [
+              { fullName: { contains: q, mode: 'insensitive' } },
+              { email: { contains: q, mode: 'insensitive' } },
+              { id: { contains: q, mode: 'insensitive' } },
+            ],
+          }
+        : {}),
+    };
+
+    const [users, total] = await Promise.all([
+      prisma.user.findMany({
+        where,
+        select: {
+          id: true,
+          fullName: true,
+          email: true,
+          department: true,
+          avatarUrl: true,
+        },
+        orderBy: { fullName: 'asc' },
+        skip: (page - 1) * limit,
+        take: limit,
+      }),
+      prisma.user.count({ where }),
+    ]);
+
+    const friendshipStatusById = await getFriendshipStatuses(userId, users.map((u) => u.id));
 
     return res.status(200).json({
       success: true,
-      data: users,
+      data: {
+        users: users.map((u) => ({
+          ...u,
+          friendshipStatus: friendshipStatusById[u.id] ?? 'NONE',
+        })),
+        pagination: {
+          page,
+          limit,
+          total,
+          totalPages: Math.max(Math.ceil(total / limit), 1),
+        },
+      },
       message: 'Search successful.',
     });
   } catch (error) {
@@ -245,4 +271,41 @@ export async function searchUsers(req, res) {
       message: 'Internal server error.',
     });
   }
+}
+
+/**
+ * Batch-computes each candidate's relationship to `userId` in a single
+ * query — avoids an N+1 (one Friendship lookup per row) on a list endpoint.
+ * A candidate with no Friendship row at all is left out of the returned
+ * map; callers should default missing ids to 'NONE'.
+ */
+async function getFriendshipStatuses(userId, candidateIds) {
+  if (candidateIds.length === 0) return {};
+
+  const friendships = await prisma.friendship.findMany({
+    where: {
+      OR: [
+        { userId, friendId: { in: candidateIds } },
+        { userId: { in: candidateIds }, friendId: userId },
+      ],
+    },
+  });
+
+  const statusById = {};
+  for (const f of friendships) {
+    const otherId = f.userId === userId ? f.friendId : f.userId;
+    if (f.status === 'ACCEPTED') {
+      statusById[otherId] = 'FRIENDS';
+    } else if (f.userId === userId) {
+      // I sent this request — still waiting on them.
+      statusById[otherId] = 'PENDING_SENT';
+    } else {
+      // They sent me a request I haven't responded to yet. Sending a
+      // request back from the client's "Add" button will auto-accept it
+      // (see friend.controller.js sendFriendRequest), so this is left
+      // clickable rather than disabled.
+      statusById[otherId] = 'PENDING_RECEIVED';
+    }
+  }
+  return statusById;
 }
