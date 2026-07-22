@@ -15,6 +15,7 @@ import prisma from '../config/prisma.js';
 import { applyPoints } from './pointsLedger.service.js';
 import { thaiDayTag } from '../utils/thaiTime.js';
 import { dailyMaxSteps, evaluateActivityAward } from './activityAward.service.js';
+import { computeEffectiveStatus } from '../utils/activityStatus.js';
 
 /**
  * Typed check-in failure so controllers can map to the right HTTP status
@@ -69,8 +70,13 @@ const CHECKIN_INCLUDE = {
  *   cleared the goal. Never reports points that weren't awarded.
  */
 export const createCheckIn = async ({ activity, userId, method, latitude = null, longitude = null }) => {
-  if (!['UPCOMING', 'ONGOING'].includes(activity.status)) {
-    throw new CheckInError('INVALID_STATUS', `Cannot check in. Activity is ${activity.status.toLowerCase()}.`);
+  // Derived from dates, not the stored column — that column is set once at
+  // creation and never transitions, so a genuinely-ongoing activity whose
+  // status was still 'UPCOMING' used to get wrongly rejected here (see
+  // utils/activityStatus.js). CANCELLED still short-circuits to itself.
+  const effectiveStatus = computeEffectiveStatus(activity);
+  if (!['UPCOMING', 'ONGOING'].includes(effectiveStatus)) {
+    throw new CheckInError('INVALID_STATUS', `Cannot check in. Activity is ${effectiveStatus.toLowerCase()}.`);
   }
 
   const existingCheckIn = await prisma.checkIn.findUnique({

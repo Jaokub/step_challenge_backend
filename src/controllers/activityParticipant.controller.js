@@ -6,6 +6,7 @@ import {
   leaveActivity as leaveActivityService,
   getParticipants,
 } from '../services/activityParticipant.service.js';
+import { computeEffectiveStatus } from '../utils/activityStatus.js';
 
 /**
  * @module ActivityParticipantController
@@ -17,6 +18,11 @@ const ok = (res, data, message) => res.json({ success: true, data, message });
 const fail = (res, status, message) => res.status(status).json({ success: false, data: null, message });
 
 const OPEN_STATUSES = new Set(['UPCOMING', 'ONGOING']);
+// The stored `status` column is set once at creation and never transitions
+// (utils/activityStatus.js) — checking it directly let enrollment stay
+// "open" for an activity that's actually long past, or block one that had
+// already genuinely started. Derive from dates instead.
+const isOpenForEnrollment = (activity) => OPEN_STATUSES.has(computeEffectiveStatus(activity));
 
 /**
  * POST /activities/:id/enroll-group
@@ -31,7 +37,7 @@ export const enrollGroupIntoActivity = async (req, res, next) => {
 
     const activity = await prisma.activity.findUnique({ where: { id: activityId } });
     if (!activity) return fail(res, 404, 'Activity not found.');
-    if (!OPEN_STATUSES.has(activity.status)) {
+    if (!isOpenForEnrollment(activity)) {
       return fail(res, 400, 'This activity is no longer open for enrollment.');
     }
 
@@ -53,7 +59,7 @@ export const joinActivity = async (req, res, next) => {
     const activityId = req.params.id;
     const activity = await prisma.activity.findUnique({ where: { id: activityId } });
     if (!activity) return fail(res, 404, 'Activity not found.');
-    if (!OPEN_STATUSES.has(activity.status)) {
+    if (!isOpenForEnrollment(activity)) {
       return fail(res, 400, 'This activity is no longer open for enrollment.');
     }
 

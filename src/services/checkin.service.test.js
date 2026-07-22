@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { createMockPrisma } from '../test-utils/mockPrisma.js';
 
 const mockPrisma = createMockPrisma();
@@ -35,9 +35,17 @@ const { createCheckIn, CheckInError } = await import('./checkin.service.js');
  * any of the guards below.
  */
 
+// Fixed clock so date-derived status (utils/activityStatus.js) is
+// deterministic across every test in this file, not just the status-guard
+// block below.
+const FIXED_NOW = new Date('2026-07-22T10:00:00Z');
+const hoursFromNow = (h) => new Date(FIXED_NOW.getTime() + h * 60 * 60 * 1000).toISOString();
+
 const ATTENDANCE_ACTIVITY = {
   id: 'act-1',
   status: 'ONGOING',
+  startDate: hoursFromNow(-1),
+  endDate: hoursFromNow(1),
   points: 50,
   maxParticipants: null,
   expectedSteps: null, // attendance-only (ADR-001 D2)
@@ -53,6 +61,8 @@ const createdRow = (overrides = {}) => ({ id: 'chk-1', userId: 'u1', ...override
 
 beforeEach(() => {
   vi.clearAllMocks();
+  vi.useFakeTimers();
+  vi.setSystemTime(FIXED_NOW);
   mockPrisma.checkIn.findUnique.mockResolvedValue(null);
   mockPrisma.checkIn.count.mockResolvedValue(0);
   mockPrisma.checkIn.create.mockResolvedValue(createdRow());
@@ -64,20 +74,34 @@ beforeEach(() => {
   applyPoints.mockResolvedValue(undefined);
 });
 
-describe('activity status guard', () => {
-  it.each(['UPCOMING', 'ONGOING'])('allows check-in while the activity is %s', async (status) => {
-    const result = await createCheckIn({
-      activity: { ...ATTENDANCE_ACTIVITY, status },
-      userId: 'u1',
-      method: 'QR',
-    });
+afterEach(() => {
+  vi.useRealTimers();
+});
+
+describe('activity status guard — derived from dates, not the stored column', () => {
+  // The stored `status` column is set once at creation and never
+  // transitions (utils/activityStatus.js) — these fixtures deliberately set
+  // it to the WRONG value to prove the guard trusts dates, not the column.
+  const effectivelyUpcoming = { ...ATTENDANCE_ACTIVITY, status: 'COMPLETED', startDate: hoursFromNow(1), endDate: hoursFromNow(2) };
+  const effectivelyOngoing = { ...ATTENDANCE_ACTIVITY, status: 'UPCOMING', startDate: hoursFromNow(-1), endDate: hoursFromNow(1) };
+  const effectivelyCompleted = { ...ATTENDANCE_ACTIVITY, status: 'UPCOMING', startDate: hoursFromNow(-3), endDate: hoursFromNow(-1) };
+  const effectivelyCancelled = { ...ATTENDANCE_ACTIVITY, status: 'CANCELLED', startDate: hoursFromNow(-1), endDate: hoursFromNow(1) };
+
+  it.each([
+    ['upcoming', effectivelyUpcoming],
+    ['ongoing', effectivelyOngoing],
+  ])('allows check-in while the activity is effectively %s', async (_label, activity) => {
+    const result = await createCheckIn({ activity, userId: 'u1', method: 'QR' });
 
     expect(result.checkIn).toEqual(createdRow());
   });
 
-  it.each(['COMPLETED', 'CANCELLED'])('refuses check-in once the activity is %s', async (status) => {
+  it.each([
+    ['completed', effectivelyCompleted],
+    ['cancelled', effectivelyCancelled],
+  ])('refuses check-in once the activity is effectively %s', async (_label, activity) => {
     await expect(
-      createCheckIn({ activity: { ...ATTENDANCE_ACTIVITY, status }, userId: 'u1', method: 'QR' }),
+      createCheckIn({ activity, userId: 'u1', method: 'QR' }),
     ).rejects.toMatchObject({ code: 'INVALID_STATUS' });
 
     // Rejected before any write is attempted.
@@ -85,13 +109,21 @@ describe('activity status guard', () => {
     expect(mockPrisma.checkIn.create).not.toHaveBeenCalled();
   });
 
+  it('ignores a stale UPCOMING column once the activity has actually started — the exact bug this fixes', async () => {
+    // Nothing ever transitions the stored column as real time passes, so a
+    // genuinely-in-progress activity used to get wrongly rejected here.
+    const result = await createCheckIn({
+      activity: { ...ATTENDANCE_ACTIVITY, status: 'UPCOMING' },
+      userId: 'u1',
+      method: 'QR',
+    });
+
+    expect(result.checkIn).toEqual(createdRow());
+  });
+
   it('throws a typed CheckInError, so controllers map status codes without string-matching', async () => {
     await expect(
-      createCheckIn({
-        activity: { ...ATTENDANCE_ACTIVITY, status: 'CANCELLED' },
-        userId: 'u1',
-        method: 'QR',
-      }),
+      createCheckIn({ activity: effectivelyCancelled, userId: 'u1', method: 'QR' }),
     ).rejects.toBeInstanceOf(CheckInError);
   });
 });

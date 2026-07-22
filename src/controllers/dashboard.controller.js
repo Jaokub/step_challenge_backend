@@ -1,6 +1,7 @@
 import prisma from '../config/prisma.js';
 import { calculateCheckInStreak } from '../services/streak.service.js';
 import { thaiDayTag, thaiDayTagEnd, thaiMonthStartInstant, thaiParts } from '../utils/thaiTime.js';
+import { activityStatusWhere } from '../utils/activityStatus.js';
 
 /**
  * @desc    Get personal dashboard data for the current user
@@ -278,21 +279,23 @@ export const getStats = async (req, res) => {
   try {
     const now = new Date();
 
-    // Activities by status count
-    const activitiesByStatus = await prisma.activity.groupBy({
-      by: ['status'],
-      _count: { id: true },
-    });
+    // Activities by status count — derived from dates, not the stored
+    // column (utils/activityStatus.js: the column is set once at creation
+    // and never transitions), so this KPI can't drift from what the
+    // activities list/pills show for the same activity.
+    const [upcomingCount, ongoingCount, completedCount, cancelledCount] = await Promise.all([
+      prisma.activity.count({ where: activityStatusWhere('UPCOMING', now) }),
+      prisma.activity.count({ where: activityStatusWhere('ONGOING', now) }),
+      prisma.activity.count({ where: activityStatusWhere('COMPLETED', now) }),
+      prisma.activity.count({ where: activityStatusWhere('CANCELLED', now) }),
+    ]);
 
     const statusCounts = {
-      UPCOMING: 0,
-      ONGOING: 0,
-      COMPLETED: 0,
-      CANCELLED: 0,
+      UPCOMING: upcomingCount,
+      ONGOING: ongoingCount,
+      COMPLETED: completedCount,
+      CANCELLED: cancelledCount,
     };
-    activitiesByStatus.forEach((item) => {
-      statusCounts[item.status] = item._count.id;
-    });
 
     // Build Thai-month boundaries (as real UTC instants) for the last 6 months.
     // Labels are derived from a UTC-midnight tag of the Thai month so they stay

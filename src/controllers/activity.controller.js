@@ -1,6 +1,7 @@
 import { v4 as uuidv4 } from 'uuid';
 import prisma from '../config/prisma.js';
 import { getMyParticipation } from '../services/activityParticipant.service.js';
+import { computeEffectiveStatus, activityStatusWhere } from '../utils/activityStatus.js';
 
 /**
  * @desc    List activities with filters, search, and pagination
@@ -21,26 +22,14 @@ export const getActivities = async (req, res) => {
     const pageNum = Math.max(1, parseInt(page, 10) || 1);
     const limitNum = Math.min(100, Math.max(1, parseInt(limit, 10) || 10));
     const skip = (pageNum - 1) * limitNum;
+    const now = new Date();
 
-    const where = {};
-
-    // Filter by status
-    if (status) {
-      const validStatuses = ['UPCOMING', 'ONGOING', 'COMPLETED', 'CANCELLED'];
-      if (validStatuses.includes(status.toUpperCase())) {
-        where.status = status.toUpperCase();
-      } else {
-        // An unrecognised status used to fall through here leaving
-        // `where.status` unset, which silently disabled the hide-cancelled
-        // default below — so `?status=<typo>` returned MORE activities than
-        // the plain request, including cancelled ones. Fall back to the same
-        // default an absent status gets.
-        where.status = { not: 'CANCELLED' };
-      }
-    } else {
-      // By default, exclude cancelled activities
-      where.status = { not: 'CANCELLED' };
-    }
+    // Filter by status — derived from dates rather than the stored column
+    // (except CANCELLED, a real manual state). See utils/activityStatus.js:
+    // the column is set once at creation and never transitions, so filtering
+    // on it directly used to strand past-dated activities under "Upcoming"
+    // forever.
+    const where = activityStatusWhere(status, now);
 
     // Search by title or description
     if (search) {
@@ -78,6 +67,9 @@ export const getActivities = async (req, res) => {
 
     const activitiesWithCount = activities.map((activity) => ({
       ...activity,
+      // Overlay the derived status so the response never reports a stale
+      // stored value the filter above has already moved past.
+      status: computeEffectiveStatus(activity, now),
       // Checked-in count (existing meaning, unchanged) vs. registered-only
       // count (ActivityParticipant — enrolled but not necessarily checked
       // in yet; BUILD_PLAN.md Phase 4). Keep both distinct on the response.
@@ -157,6 +149,9 @@ export const getActivityById = async (req, res) => {
 
     const result = {
       ...activity,
+      // Same derived-status overlay as getActivities() — see
+      // utils/activityStatus.js.
+      status: computeEffectiveStatus(activity),
       // Checked-in count vs. registered-only count — distinct concepts, see
       // getActivities() above for the same split.
       participantCount: activity._count.checkIns,
