@@ -37,6 +37,7 @@ coverage/
 
 # Vitest config's transient ESM bundle (regenerated every run)
 vitest.config.js.timestamp-*.mjs
+*.test.js
 
 # Temp
 tmp/

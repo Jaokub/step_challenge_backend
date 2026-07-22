@@ -96,15 +96,118 @@ describe('regression — points stay invisible in the mobile app (Phase 8 guard)
       'admin.pointsAwardedBadge',
       'admin.pointsPendingBadge',
       'admin.manualCheckinSuccessPoints',
+      // Deleted 2026-07-20 along with the admin points form field and the two
+      // screens that were rendering real point numbers.
+      'admin.activityPoints',
+      'admin.egPoints',
+      'admin.pointsShort',
+      'groups.totalPointsStat',
+      'activity.metaPoints',
+      'activity.points',
+      'common.points',
+      'common.pts',
     ];
+    // Match the key only where it appears as a QUOTED string — i.e. how it
+    // would be written in a t('...') call. A bare substring match produces
+    // false positives against ordinary property access: `activity.points` is
+    // both an i18n key and a real field on the Activity type.
     const offenders = [];
     for (const file of allFiles) {
       for (const key of retiredKeys) {
-        if (file.content.includes(key)) {
+        const quoted = new RegExp(`['"\`]${key.replace(/\./g, '\\.')}['"\`]`);
+        if (quoted.test(file.content)) {
           offenders.push(`${file.path} references retired i18n key "${key}"`);
         }
       }
     }
     expect(offenders).toEqual([]);
+  });
+});
+
+/**
+ * The locale files are where user-facing copy actually lives, and the guard
+ * above never looked at them: `collectFiles` only walks .ts/.tsx/.js/.jsx.
+ *
+ * That blind spot let real points copy ship. On 2026-07-20 the locale files
+ * still held 21 strings containing points vocabulary, 11 of them reachable —
+ * including a stat card rendering a live `totalPoints` figure on the group
+ * overview screen and a "{{points}} pt" chip on activity detail.
+ *
+ * The deeper problem was the shape of the check, not just its file filter:
+ * `retiredKeys` above is a hand-maintained DENYLIST, so any points string not
+ * on the list passes. Adding .json to that same denylist would have missed
+ * them too.
+ *
+ * So this block inverts it. It scans every locale VALUE for points vocabulary
+ * and fails by default. New points copy has to be added to ALLOWED_KEYS with
+ * a written reason, which makes reintroducing it a deliberate act rather than
+ * an accident.
+ */
+describe('regression — no points vocabulary in the mobile locale files', () => {
+  const LOCALES_DIR = resolve(MOBILE_ROOT, 'src/i18n/locales');
+
+  // Thai and English words for points. `\b` keeps "pt"/"pts" from matching
+  // inside unrelated words, and avoids flagging e.g. "checkpoint".
+  const POINTS_VOCAB = /แต้ม|คะแนน|\bpoints?\b|\bpts?\b/i;
+
+  /**
+   * Keys permitted to mention points despite the rule above.
+   * Empty on purpose. Adding an entry requires a comment saying why the copy
+   * is correct — e.g. an admin-only screen that genuinely exposes the dormant
+   * ledger. "It was already there" is not a reason.
+   */
+  const ALLOWED_KEYS = [];
+
+  const flatten = (obj, prefix = '') =>
+    Object.entries(obj).flatMap(([key, value]) => {
+      const path = prefix ? `${prefix}.${key}` : key;
+      return typeof value === 'object' && value !== null
+        ? flatten(value, path)
+        : [[path, value]];
+    });
+
+  const localeFiles = (() => {
+    try {
+      return readdirSync(LOCALES_DIR)
+        .filter((f) => extname(f) === '.json')
+        .map((f) => ({ name: f, json: JSON.parse(readFileSync(join(LOCALES_DIR, f), 'utf8')) }));
+    } catch {
+      return [];
+    }
+  })();
+
+  it('sanity check: the locale files are actually reachable and non-trivial', () => {
+    // Without this, a wrong path would make every assertion below pass by
+    // scanning nothing — the exact failure mode that hid the bug.
+    expect(localeFiles.length).toBeGreaterThan(0);
+    for (const { name, json } of localeFiles) {
+      expect(flatten(json).length, `${name} looks empty`).toBeGreaterThan(100);
+    }
+  });
+
+  it('no locale string mentions points, in any language', () => {
+    const offenders = [];
+    for (const { name, json } of localeFiles) {
+      for (const [key, value] of flatten(json)) {
+        if (typeof value !== 'string') continue;
+        if (ALLOWED_KEYS.includes(key)) continue;
+        if (POINTS_VOCAB.test(value)) {
+          offenders.push(`${name} → ${key}: ${JSON.stringify(value)}`);
+        }
+      }
+    }
+    expect(offenders).toEqual([]);
+  });
+
+  it('every locale file has the same key set, so a fix in one language cannot be forgotten in another', () => {
+    // A points string removed from Thai but left in English would still be
+    // shown to anyone running the app in English.
+    if (localeFiles.length < 2) return;
+    const [first, ...rest] = localeFiles;
+    const baseline = flatten(first.json).map(([k]) => k).sort();
+    for (const other of rest) {
+      const keys = flatten(other.json).map(([k]) => k).sort();
+      expect(keys, `${other.name} differs from ${first.name}`).toEqual(baseline);
+    }
   });
 });

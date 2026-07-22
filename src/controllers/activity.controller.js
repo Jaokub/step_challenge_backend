@@ -29,6 +29,13 @@ export const getActivities = async (req, res) => {
       const validStatuses = ['UPCOMING', 'ONGOING', 'COMPLETED', 'CANCELLED'];
       if (validStatuses.includes(status.toUpperCase())) {
         where.status = status.toUpperCase();
+      } else {
+        // An unrecognised status used to fall through here leaving
+        // `where.status` unset, which silently disabled the hide-cancelled
+        // default below — so `?status=<typo>` returned MORE activities than
+        // the plain request, including cancelled ones. Fall back to the same
+        // default an absent status gets.
+        where.status = { not: 'CANCELLED' };
       }
     } else {
       // By default, exclude cancelled activities
