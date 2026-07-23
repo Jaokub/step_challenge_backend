@@ -97,6 +97,9 @@ export const getGroupChildren = async (req, res) => {
   }
 };
 
+const VALID_PERIODS = new Set(['today', 'week', 'month']);
+const sanitizePeriod = (value) => (VALID_PERIODS.has(value) ? value : 'month');
+
 /**
  * Bundled { parent, siblings, children } for the frame-13/15 relation
  * cards in one authorized call. Caller must be a member of the group
@@ -104,12 +107,22 @@ export const getGroupChildren = async (req, res) => {
  * stats+top3 without a separate 'descendant' visibility relation, since
  * access is gated on membership of the group whose page this is, not on
  * membership of the parent).
- * @route GET /api/groups/:id/hierarchy-overview
+ *
+ * Each relation card ranks its Top-3 members independently — the mobile
+ * screen shows one day/week/month pill per section (parent card, the
+ * siblings section, the children section), so each accepts its own query
+ * param rather than one shared period for the whole call.
+ * @route GET /api/groups/:id/hierarchy-overview?parentPeriod=&siblingsPeriod=&childrenPeriod=
  */
 export const getGroupHierarchyOverview = async (req, res) => {
   try {
     const { id: groupId } = req.params;
-    const overview = await getHierarchyOverview(groupId);
+    const periods = {
+      parentPeriod: sanitizePeriod(req.query.parentPeriod),
+      siblingsPeriod: sanitizePeriod(req.query.siblingsPeriod),
+      childrenPeriod: sanitizePeriod(req.query.childrenPeriod),
+    };
+    const overview = await getHierarchyOverview(groupId, periods);
 
     if (!overview) {
       return res.status(404).json({ success: false, data: null, message: 'Group not found' });

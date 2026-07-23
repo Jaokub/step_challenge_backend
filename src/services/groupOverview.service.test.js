@@ -11,6 +11,7 @@ const {
   getSiblingOverviews,
   getChildRanking,
   getGroupOwnOverview,
+  getHierarchyOverview,
 } = await import('./groupOverview.service.js');
 
 const USER = (id, name, totalPoints = 0) => ({
@@ -208,6 +209,80 @@ describe('groupOverview.service (Phase 5.2 deferred tests)', () => {
       expect(ranking).toEqual([]);
       expect(stats.month).toEqual({ steps: 0, calories: 0, distanceKm: 0 });
       expect(mockPrisma.groupMember.findMany).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('getHierarchyOverview — children as per-group member previews', () => {
+    it('returns one preview per child group with member-level Top-3, not a group-vs-group ranking', async () => {
+      // No parent (parentGroupId null) so getSiblingGroups short-circuits to
+      // [] without a query — keeps this test focused on the children path.
+      mockPrisma.appGroup.findUnique.mockResolvedValueOnce({ id: 'g1', parentGroupId: null }); // group.scope lookup
+      mockPrisma.appGroup.findMany.mockResolvedValueOnce([{ id: 'c1', name: 'Child A' }]); // getChildGroups
+
+      mockPrisma.groupMember.findMany
+        .mockResolvedValueOnce([{ groupId: 'c1', userId: 'u1' }, { groupId: 'c1', userId: 'u2' }]) // getGroupsPeriodSteps
+        .mockResolvedValueOnce([{ user: USER('u1', 'Alice') }, { user: USER('u2', 'Bob') }]); // buildGroupPreview -> getGroupLeaderboard
+
+      mockPrisma.healthRecord.groupBy
+        .mockResolvedValueOnce([]) // today (getGroupsPeriodSteps)
+        .mockResolvedValueOnce([]) // week (getGroupsPeriodSteps)
+        .mockResolvedValueOnce([]) // month (getGroupsPeriodSteps)
+        .mockResolvedValueOnce([
+          { userId: 'u1', _sum: { steps: 10, calories: 0, distanceKm: 0 } },
+          { userId: 'u2', _sum: { steps: 40, calories: 0, distanceKm: 0 } },
+        ]); // buildGroupPreview's own window query (default period = month)
+
+      const result = await getHierarchyOverview('g1');
+
+      expect(Array.isArray(result.children)).toBe(true);
+      expect(result.children).toHaveLength(1);
+      expect(result.children[0].groupId).toBe('c1');
+      expect(result.children[0].groupName).toBe('Child A');
+      // Top-3 rows are MEMBERS (Alice/Bob), never the child group's own name.
+      expect(result.children[0].top3.map((r) => r.name)).toEqual(['Bob', 'Alice']);
+      expect(result.children[0].top3.map((r) => r.rank)).toEqual([1, 2]);
+    });
+
+    it('re-ranks a section\'s Top-3 by that section\'s own period, independently of the others', async () => {
+      mockPrisma.appGroup.findUnique.mockResolvedValueOnce({ id: 'g1', parentGroupId: null });
+      mockPrisma.appGroup.findMany.mockResolvedValueOnce([{ id: 'c1', name: 'Child A' }]);
+
+      mockPrisma.groupMember.findMany
+        .mockResolvedValueOnce([{ groupId: 'c1', userId: 'u1' }, { groupId: 'c1', userId: 'u2' }])
+        .mockResolvedValueOnce([{ user: USER('u1', 'Alice') }, { user: USER('u2', 'Bob') }]);
+
+      mockPrisma.healthRecord.groupBy
+        .mockResolvedValueOnce([]) // today window (stats)
+        .mockResolvedValueOnce([]) // week window (stats)
+        .mockResolvedValueOnce([]) // month window (stats)
+        // buildGroupPreview is asked for childrenPeriod='today' below, so its
+        // own window query is the "today" figures — Bob ahead here even
+        // though Alice would win on week/month.
+        .mockResolvedValueOnce([
+          { userId: 'u1', _sum: { steps: 5, calories: 0, distanceKm: 0 } },
+          { userId: 'u2', _sum: { steps: 50, calories: 0, distanceKm: 0 } },
+        ]);
+
+      const result = await getHierarchyOverview('g1', { childrenPeriod: 'today' });
+
+      expect(result.children[0].top3.map((r) => r.name)).toEqual(['Bob', 'Alice']);
+    });
+
+    it('returns an empty children array for a group with no child groups', async () => {
+      mockPrisma.appGroup.findUnique.mockResolvedValueOnce({ id: 'g1', parentGroupId: null });
+      mockPrisma.appGroup.findMany.mockResolvedValueOnce([]); // getChildGroups
+
+      const result = await getHierarchyOverview('g1');
+
+      expect(result.children).toEqual([]);
+      expect(result.parent).toBeNull();
+      expect(result.siblings).toEqual([]);
+    });
+
+    it('returns null for a group that does not exist', async () => {
+      mockPrisma.appGroup.findUnique.mockResolvedValueOnce(null);
+      const result = await getHierarchyOverview('missing-group');
+      expect(result).toBeNull();
     });
   });
 

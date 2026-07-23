@@ -67,32 +67,35 @@ export const getGroupOwnOverview = async (groupId, startDate, endDate) => {
  *
  * @param {string} groupId
  * @param {string|null} parentGroupId
+ * @param {'today'|'week'|'month'} [period]
  */
-export const getSiblingOverviews = async (groupId, parentGroupId) => {
+export const getSiblingOverviews = async (groupId, parentGroupId, period = 'month') => {
   const siblings = await getSiblingGroups(groupId, parentGroupId);
   if (siblings.length === 0) return [];
 
   const periodStats = await getGroupsPeriodSteps(siblings.map((s) => s.id));
-  return Promise.all(siblings.map((sibling) => buildGroupPreview(sibling, periodStats)));
+  return Promise.all(siblings.map((sibling) => buildGroupPreview(sibling, periodStats, period)));
 };
 
 /**
  * A single group's stats + Top-3 MEMBERS preview, in the same shape
  * `getSiblingOverviews` returns per sibling — shared by the bundled
- * hierarchy-overview endpoint for the "parent" card and reusable wherever a
- * one-off relation preview is needed.
+ * hierarchy-overview endpoint for the "parent"/sibling/child cards and
+ * reusable wherever a one-off relation preview is needed.
  * @param {{id: string, name: string}} group
  * @param {Map<string, object>} periodStats - from getGroupsPeriodSteps, must already include `group.id`.
+ * @param {'today'|'week'|'month'} [period] - which window ranks the Top-3
+ *   preview; the `overallStats` {today,week,month} columns are unaffected
+ *   and always show all three regardless of this.
  */
-const buildGroupPreview = async (group, periodStats) => {
+const buildGroupPreview = async (group, periodStats, period = 'month') => {
   const stats = periodStats.get(group.id);
-  // Real per-member THIS-MONTH steps for the Top-3 preview, so the member
-  // rows match the card header (period steps) and the child card (also
-  // step-based) instead of showing all-time points. getGroupLeaderboard only
-  // populates row.steps when a date window is passed, and it sorts by points,
-  // so pass the month window and re-sort by steps.
-  const { month } = periodWindows();
-  const ranking = await getGroupLeaderboard(group.id, month.gte, month.lt);
+  // Real per-member steps (for the chosen window) for the Top-3 preview, so
+  // the member rows can be re-ranked by day/week/month instead of always
+  // showing all-time points. getGroupLeaderboard only populates row.steps
+  // when a date window is passed, so re-sort by steps ourselves.
+  const window = periodWindows()[period] ?? periodWindows().month;
+  const ranking = await getGroupLeaderboard(group.id, window.gte, window.lt);
   const top3 = [...ranking]
     .sort((a, b) => (b.steps ?? 0) - (a.steps ?? 0))
     .slice(0, 3)
@@ -246,14 +249,29 @@ export const getGroupPeriodStats = async (groupId) => {
  * data is fetched server-side regardless of the caller's membership in the
  * parent itself ("prefer the bundle" per the BUILD_PLAN note).
  *
- * Fetches parent + siblings' period stats in a single combined
- * `getGroupsPeriodSteps` call (not two separate ones) to keep this a fixed
- * number of queries regardless of sibling count.
+ * `children` used to be one aggregate card ranking the child GROUPS against
+ * each other (via `getChildRanking`) — that read as "wrong" in practice
+ * (the rank list showed group names, capped at 3, with no way to see a
+ * child group's own members). It's now one preview PER child group, same
+ * shape as `siblings` — each with its own overallStats + Top-3 MEMBERS,
+ * unbounded in count (the mobile side caps how many render, not this call).
+ * `getChildRanking`/`GET /groups/:id/children` (group-vs-group ranking)
+ * stays as a separate, still-routed, now-unused-by-this-endpoint function —
+ * nothing here calls it anymore.
+ *
+ * Fetches parent + siblings' + children's period stats in a single combined
+ * `getGroupsPeriodSteps` call (not three separate ones) to keep this a
+ * fixed number of queries regardless of sibling/child count.
  *
  * @param {string} groupId
- * @returns {Promise<{parent: object|null, siblings: object[], children: {stats: object, top3: object[]}} | null>}
+ * @param {{parentPeriod?: 'today'|'week'|'month', siblingsPeriod?: 'today'|'week'|'month', childrenPeriod?: 'today'|'week'|'month'}} [periods]
+ *   Each relation card can be re-ranked independently (mobile shows one
+ *   day/week/month pill per section).
+ * @returns {Promise<{parent: object|null, siblings: object[], children: object[]} | null>}
  */
-export const getHierarchyOverview = async (groupId) => {
+export const getHierarchyOverview = async (groupId, periods = {}) => {
+  const { parentPeriod = 'month', siblingsPeriod = 'month', childrenPeriod = 'month' } = periods;
+
   const group = await prisma.appGroup.findUnique({
     where: { id: groupId },
     select: { id: true, parentGroupId: true },
@@ -264,20 +282,25 @@ export const getHierarchyOverview = async (groupId) => {
     ? await prisma.appGroup.findUnique({ where: { id: group.parentGroupId }, select: { id: true, name: true } })
     : null;
   const siblings = await getSiblingGroups(groupId, group.parentGroupId);
+  const children = await getChildGroups(groupId);
 
-  const relevantIds = [...(parentGroup ? [parentGroup.id] : []), ...siblings.map((s) => s.id)];
+  const relevantIds = [
+    ...(parentGroup ? [parentGroup.id] : []),
+    ...siblings.map((s) => s.id),
+    ...children.map((c) => c.id),
+  ];
   const periodStats = relevantIds.length ? await getGroupsPeriodSteps(relevantIds) : new Map();
 
-  const [parent, siblingPreviews, childRanking] = await Promise.all([
-    parentGroup ? buildGroupPreview(parentGroup, periodStats) : Promise.resolve(null),
-    Promise.all(siblings.map((s) => buildGroupPreview(s, periodStats))),
-    getChildRanking(groupId),
+  const [parent, siblingPreviews, childPreviews] = await Promise.all([
+    parentGroup ? buildGroupPreview(parentGroup, periodStats, parentPeriod) : Promise.resolve(null),
+    Promise.all(siblings.map((s) => buildGroupPreview(s, periodStats, siblingsPeriod))),
+    Promise.all(children.map((c) => buildGroupPreview(c, periodStats, childrenPeriod))),
   ]);
 
   return {
     parent,
     siblings: siblingPreviews,
-    children: { stats: childRanking.stats, top3: childRanking.ranking.slice(0, 3) },
+    children: childPreviews,
   };
 };
 
