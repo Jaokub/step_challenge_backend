@@ -36,6 +36,28 @@ export function computeEffectiveStatus(activity, now = new Date()) {
 }
 
 /**
+ * Prisma `where` for "hasn't finished yet" — the union of UPCOMING and
+ * ONGOING, derived from dates like everything else here.
+ *
+ * Exists because that union is NOT expressible by calling
+ * `activityStatusWhere` twice: UPCOMING is `startDate > now` and ONGOING is
+ * `startDate <= now AND endDate >= now`, and merging them into one object
+ * would produce contradictory `startDate` clauses. Since `endDate >= startDate`
+ * always holds, the union collapses to a single `endDate >= now`.
+ *
+ * The personal dashboard's "what's coming up" card is the caller. It used to
+ * filter on `status IN ('UPCOMING','ONGOING') AND startDate >= now`, which
+ * silently excluded every ongoing activity — anything ongoing has by
+ * definition already started, so the second clause killed the first clause's
+ * ONGOING half. Fixed 2026-08-03 (TEST_FINDINGS F3).
+ *
+ * @param {Date} [now]
+ */
+export function upcomingOrOngoingWhere(now = new Date()) {
+  return { status: { not: 'CANCELLED' }, endDate: { gte: now } };
+}
+
+/**
  * Builds the Prisma `where` fragment for a requested status filter using
  * date comparisons instead of the raw column (CANCELLED is still the real
  * column value — it's the one status that IS just stored data). Mirrors

@@ -1,13 +1,26 @@
 import prisma from '../config/prisma.js';
 import { getGroupLeaderboard } from './leaderboard.service.js';
 import { getSiblingGroups, getChildGroups } from './group.scope.js';
-import { thaiDayTag, thaiWeekStartTag, thaiMonthStartTag, addDays } from '../utils/thaiTime.js';
+import {
+  getGroupsPeriodSteps,
+  getGroupPeriodStats,
+  periodWindows,
+} from './groupAggregation.service.js';
 
 /**
  * @module GroupOverviewService
- * @description Hierarchy-aware group stats, composed on top of the existing
- * (frozen) leaderboard.service — never reimplements point/step aggregation.
+ * @description Hierarchy-aware group stats — the presentation layer over
+ * `groupAggregation.service.js`, which does the actual subtree resolution and
+ * step aggregation (ADR-003).
+ *
+ * Re-exported here so existing callers and tests keep importing
+ * `getGroupsPeriodSteps` / `getGroupPeriodStats` from this module; the split
+ * exists to keep both files near the 200-line convention.
  */
+
+export { getGroupsPeriodSteps, getGroupPeriodStats };
+
+const EMPTY_PERIOD = () => ({ steps: 0, calories: 0, distanceKm: 0 });
 
 /**
  * Sum a group's ranking rows into a single overall-stats object.
@@ -74,7 +87,7 @@ export const getSiblingOverviews = async (groupId, parentGroupId, period = 'mont
   if (siblings.length === 0) return [];
 
   const periodStats = await getGroupsPeriodSteps(siblings.map((s) => s.id));
-  return Promise.all(siblings.map((sibling) => buildGroupPreview(sibling, periodStats, period)));
+  return siblings.map((sibling) => buildGroupPreview(sibling, periodStats, period));
 };
 
 /**
@@ -88,22 +101,34 @@ export const getSiblingOverviews = async (groupId, parentGroupId, period = 'mont
  *   preview; the `overallStats` {today,week,month} columns are unaffected
  *   and always show all three regardless of this.
  */
-const buildGroupPreview = async (group, periodStats, period = 'month') => {
+const buildGroupPreview = (group, periodStats, period = 'month') => {
   const stats = periodStats.get(group.id);
-  // Real per-member steps (for the chosen window) for the Top-3 preview, so
-  // the member rows can be re-ranked by day/week/month instead of always
-  // showing all-time points. getGroupLeaderboard only populates row.steps
-  // when a date window is passed, so re-sort by steps ourselves.
-  const window = periodWindows()[period] ?? periodWindows().month;
-  const ranking = await getGroupLeaderboard(group.id, window.gte, window.lt);
-  const top3 = [...ranking]
-    .sort((a, b) => (b.steps ?? 0) - (a.steps ?? 0))
+  // Top-3 comes straight from the engine's member rows — no query of its own.
+  //
+  // This used to call `getGroupLeaderboard(group.id, ...)` once per group,
+  // which made a screen with N relation cards issue 2N extra queries. The
+  // docstring on `getGroupsPeriodSteps` warned against exactly that ("do NOT
+  // loop getGroupLeaderboard per group per window") while this function did
+  // it. Deriving from the engine also guarantees the Top-3 and the stat
+  // columns above it come from one data set, so they cannot disagree.
+  const top3 = [...stats.members]
+    .sort((a, b) => (b[period]?.steps ?? 0) - (a[period]?.steps ?? 0))
     .slice(0, 3)
-    .map((row, i) => ({ rank: i + 1, name: row.fullName, steps: row.steps ?? 0 }));
+    .map((row, i) => ({
+      rank: i + 1,
+      name: row.fullName,
+      steps: row[period]?.steps ?? 0,
+      groups: row.groups,
+    }));
   return {
     groupId: group.id,
     groupName: group.name,
-    overallStats: { today: stats.today, week: stats.week, month: stats.month, memberCount: stats.memberCount },
+    overallStats: {
+      today: stats.today,
+      week: stats.week,
+      month: stats.month,
+      subtreeMemberCount: stats.subtreeMemberCount,
+    },
     top3,
   };
 };
@@ -124,10 +149,17 @@ const buildGroupPreview = async (group, periodStats, period = 'month') => {
 export const getChildRanking = async (groupId) => {
   const children = await getChildGroups(groupId);
   if (children.length === 0) {
-    return { stats: { today: EMPTY_PERIOD(), week: EMPTY_PERIOD(), month: EMPTY_PERIOD() }, ranking: [] };
+    return {
+      stats: { today: EMPTY_PERIOD(), week: EMPTY_PERIOD(), month: EMPTY_PERIOD() },
+      ranking: [],
+      // Nothing to be "left over" from when there are no child rows at all.
+      directOnlyMembers: { today: EMPTY_PERIOD(), week: EMPTY_PERIOD(), month: EMPTY_PERIOD(), count: 0 },
+    };
   }
 
-  const periodStats = await getGroupsPeriodSteps(children.map((c) => c.id));
+  // The group itself rides along in the same batched call so its
+  // directOnlyMembers figure costs no extra query.
+  const periodStats = await getGroupsPeriodSteps([groupId, ...children.map((c) => c.id)]);
 
   const ranking = children
     .map((c) => ({ groupId: c.id, groupName: c.name, steps: periodStats.get(c.id).month.steps }))
@@ -144,98 +176,12 @@ export const getChildRanking = async (groupId) => {
     }
   }
 
-  return { stats, ranking };
-};
-
-// ─── 3-window step aggregation (BUILD_PLAN.md Phase 5.2) ────────────────────
-
-/**
- * The three time windows the frame-13/15 relation cards display, as
- * HealthRecord.recordDate bounds (recordDate is a @db.Date UTC-midnight tag,
- * so these use the thaiTime "tag" helpers). All three are "so far": from the
- * period start up to and including today.
- * @param {Date} [now]
- */
-const periodWindows = (now = new Date()) => {
-  const dayStart = thaiDayTag(now);
-  const tomorrow = addDays(dayStart, 1); // exclusive upper bound = end of today
-  return {
-    today: { gte: dayStart, lt: tomorrow },
-    week: { gte: thaiWeekStartTag(now), lt: tomorrow },
-    month: { gte: thaiMonthStartTag(now), lt: tomorrow },
-  };
-};
-
-const EMPTY_PERIOD = () => ({ steps: 0, calories: 0, distanceKm: 0 });
-
-/**
- * Per-group today/this-week/this-month step (and calorie/distance) totals for
- * a set of groups, in a FIXED number of queries regardless of how many groups
- * or members are involved: 1 membership query + 3 window `groupBy`s = 4 total.
- * This is the bundled path the group-detail screen needs (own group + parent +
- * every sibling + every child) without an N+1 explosion — do NOT loop
- * getGroupLeaderboard per group per window.
- *
- * @param {string[]} groupIds
- * @returns {Promise<Map<string, { today: object, week: object, month: object, memberCount: number }>>}
- */
-export const getGroupsPeriodSteps = async (groupIds) => {
-  const uniqueGroupIds = [...new Set(groupIds)];
-  const result = new Map(
-    uniqueGroupIds.map((id) => [id, { today: EMPTY_PERIOD(), week: EMPTY_PERIOD(), month: EMPTY_PERIOD(), memberCount: 0 }])
-  );
-  if (uniqueGroupIds.length === 0) return result;
-
-  // 1) memberships for every group at once
-  const memberships = await prisma.groupMember.findMany({
-    where: { groupId: { in: uniqueGroupIds } },
-    select: { groupId: true, userId: true },
-  });
-  memberships.forEach((m) => {
-    result.get(m.groupId).memberCount += 1;
-  });
-
-  const userIds = [...new Set(memberships.map((m) => m.userId))];
-  if (userIds.length === 0) return result;
-
-  // 2) three window aggregations, one groupBy each (Promise.all = 3 queries)
-  const w = periodWindows();
-  const groupByWindow = (window) =>
-    prisma.healthRecord.groupBy({
-      by: ['userId'],
-      where: { userId: { in: userIds }, recordDate: window },
-      _sum: { steps: true, calories: true, distanceKm: true },
-    });
-  const [todayRows, weekRows, monthRows] = await Promise.all([
-    groupByWindow(w.today),
-    groupByWindow(w.week),
-    groupByWindow(w.month),
-  ]);
-  const toMap = (rows) => new Map(rows.map((r) => [r.userId, r._sum]));
-  const maps = { today: toMap(todayRows), week: toMap(weekRows), month: toMap(monthRows) };
-
-  // 3) fold per-user sums up into each group they belong to
-  for (const { groupId, userId } of memberships) {
-    const acc = result.get(groupId);
-    for (const period of ['today', 'week', 'month']) {
-      const s = maps[period].get(userId);
-      if (!s) continue;
-      acc[period].steps += s.steps ?? 0;
-      acc[period].calories += s.calories ?? 0;
-      acc[period].distanceKm += s.distanceKm ?? 0;
-    }
-  }
-  return result;
-};
-
-/**
- * Single-group convenience wrapper over getGroupsPeriodSteps.
- * @param {string} groupId
- * @returns {Promise<{ today: object, week: object, month: object, memberCount: number }>}
- */
-export const getGroupPeriodStats = async (groupId) => {
-  const map = await getGroupsPeriodSteps([groupId]);
-  return map.get(groupId);
+  // Members of this group who are in NONE of its children — the "left over"
+  // row shown under the ranked child list. Kept out of `ranking` because it is
+  // not a group: a `groupId: null` entry there would break tap-to-open, and a
+  // rank number on something that competes with nobody reads oddly.
+  const own = periodStats.get(groupId);
+  return { stats, ranking, directOnlyMembers: own.directOnly };
 };
 
 /**

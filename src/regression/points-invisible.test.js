@@ -13,8 +13,9 @@ import { fileURLToPath } from 'node:url';
  * it reads mobile/ source files but asserts nothing about the backend
  * itself. The "assert /leaderboard/* responses are ranked by steps" half of
  * this Phase 6A bullet is covered separately by leaderboard.service.test.js
- * (getGlobalLeaderboard/getFriendsLeaderboard/getGroupLeaderboard specs),
- * not duplicated here.
+ * (getFriendsLeaderboard/getGroupLeaderboard specs — the global one was
+ * removed with its route on 2026-08-03, TEST_FINDINGS F2), not duplicated
+ * here.
  */
 
 const __dirname = fileURLToPath(new URL('.', import.meta.url));
@@ -209,5 +210,78 @@ describe('regression — no points vocabulary in the mobile locale files', () =>
       const keys = flatten(other.json).map(([k]) => k).sort();
       expect(keys, `${other.name} differs from ${first.name}`).toEqual(baseline);
     }
+  });
+});
+
+/**
+ * Third blind spot, found 2026-08-03 (TEST_FINDINGS F15).
+ *
+ * The two guards above look for points as COPY — a badge, a toast, a locale
+ * string. Neither can see points used as a SORT KEY, because a comparator
+ * renders no text at all.
+ *
+ * That is exactly how the home-screen leaderboard shipped ranked by points for
+ * two weeks after the step pivot. `useDashboard` took the backend's
+ * step-ranked rows and re-sorted them by `points ?? totalPoints`, then
+ * renumbered ranks 1..N from that order — while each row rendered `steps` via
+ * `StepsValue`. So the card showed rank 1 on 8,000 steps sitting above rank 2
+ * on 12,000: visibly wrong, entirely invisible to a copy-based guard.
+ *
+ * `HealthRecord.steps` is the ranking source of truth (CLAUDE.md). Nothing in
+ * the mobile tree should order a list by a points field.
+ */
+describe('regression — points are never used as a sort key (F15 guard)', () => {
+  const allFiles = readAll(collectFiles(MOBILE_ROOT));
+
+  /**
+   * Pull the text immediately following each `.sort(` so the check looks at
+   * comparators rather than whole files — `points` may legitimately appear
+   * elsewhere in a file that also sorts by something valid.
+   *
+   * A window rather than real brace matching: comparators in this codebase are
+   * one-liners, and a parser would be more machinery than the risk warrants.
+   * Erring toward false positives is the right direction here — a spurious
+   * failure costs a comment, a miss costs a wrong leaderboard.
+   */
+  const SORT_WINDOW = 160;
+  const comparatorsIn = (content) => {
+    const out = [];
+    let from = 0;
+    for (;;) {
+      const at = content.indexOf('.sort(', from);
+      if (at === -1) break;
+      out.push(content.slice(at, at + SORT_WINDOW));
+      from = at + 6;
+    }
+    return out;
+  };
+
+  it('sanity check: the mobile tree is reachable and does contain sorts', () => {
+    // Without this the assertion below passes by scanning nothing.
+    const total = allFiles.reduce((n, f) => n + comparatorsIn(f.content).length, 0);
+    expect(allFiles.length).toBeGreaterThan(0);
+    expect(total).toBeGreaterThan(0);
+  });
+
+  it('no comparator anywhere in the mobile tree references a points field', () => {
+    const offenders = [];
+    for (const file of allFiles) {
+      for (const comparator of comparatorsIn(file.content)) {
+        if (/\b(totalPoints|points)\b/.test(comparator)) {
+          offenders.push(`${file.path}: ${comparator.split('\n')[0].trim()}`);
+        }
+      }
+    }
+    expect(offenders).toEqual([]);
+  });
+
+  it('the dashboard leaderboard specifically sorts by steps', () => {
+    // Positive assertion to go with the negative one above: the guard must not
+    // be satisfiable by deleting the sort altogether.
+    const useDashboard = allFiles.find((f) => f.path.endsWith('useDashboard.ts'));
+    expect(useDashboard, 'useDashboard.ts not found — did it move?').toBeDefined();
+
+    const comparators = comparatorsIn(useDashboard.content);
+    expect(comparators.some((c) => /\bsteps\b/.test(c))).toBe(true);
   });
 });

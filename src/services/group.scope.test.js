@@ -4,7 +4,24 @@ import { createMockPrisma } from '../test-utils/mockPrisma.js';
 const mockPrisma = createMockPrisma();
 vi.mock('../config/prisma.js', () => ({ default: mockPrisma }));
 
-const { MAX_GROUP_DEPTH, getAncestorIds, resolveGroupAccess } = await import('./group.scope.js');
+const { MAX_GROUP_DEPTH, getAncestorIds, resolveGroupAccess, getSubtreeGroups } = await import(
+  './group.scope.js'
+);
+
+/**
+ * Wire appGroup.findMany's downward BFS from a parentId -> children map.
+ * Children are `{ id, name, parentGroupId }` because getSubtreeGroups needs
+ * the parent link to attribute each child to the right root.
+ */
+const wireDescendants = (childrenByParentId) => {
+  mockPrisma.appGroup.findMany.mockImplementation(({ where: { parentGroupId } }) =>
+    Promise.resolve(
+      parentGroupId.in.flatMap((pid) =>
+        (childrenByParentId[pid] ?? []).map((id) => ({ id, name: `name-${id}`, parentGroupId: pid }))
+      )
+    )
+  );
+};
 
 /** Wire appGroup.findUnique to look up parentGroupId from a plain id->parentId map. */
 const wireTree = (parentById) => {
@@ -47,6 +64,122 @@ describe('group.scope — hierarchy resolution (Phase 5.1 deferred tests)', () =
 
       expect(mockPrisma.appGroup.findUnique.mock.calls.length).toBeLessThanOrEqual(MAX_GROUP_DEPTH + 2);
       expect(new Set(ancestors).size).toBe(ancestors.length); // no infinite duplication
+    });
+  });
+
+  describe('getSubtreeGroups (ADR-003)', () => {
+    const idsOf = (map, root) => (map.get(root) ?? []).map((g) => g.id);
+
+    it('collects a multi-level subtree, excluding the root itself', async () => {
+      // faculty -> [deptA, deptB], deptA -> [lab]
+      wireDescendants({ faculty: ['deptA', 'deptB'], deptA: ['lab'] });
+
+      const map = await getSubtreeGroups(['faculty']);
+
+      expect(new Set(idsOf(map, 'faculty'))).toEqual(new Set(['deptA', 'deptB', 'lab']));
+      expect(idsOf(map, 'faculty')).not.toContain('faculty');
+    });
+
+    it('carries the group name, which the sub-group badges need', async () => {
+      wireDescendants({ g1: ['g2'] });
+
+      const map = await getSubtreeGroups(['g1']);
+      expect(map.get('g1')).toEqual([{ id: 'g2', name: 'name-g2' }]);
+    });
+
+    it('returns an empty list for a leaf — the whole reason badges vanish on leaf groups', async () => {
+      wireDescendants({});
+      const map = await getSubtreeGroups(['leaf']);
+
+      expect(map.get('leaf')).toEqual([]);
+    });
+
+    it('always has an entry per requested root, even one that does not exist', async () => {
+      // Callers index the map directly; a missing key would throw rather than
+      // yield an empty subtree.
+      wireDescendants({});
+      const map = await getSubtreeGroups(['ghost']);
+
+      expect(map.has('ghost')).toBe(true);
+      expect(map.get('ghost')).toEqual([]);
+    });
+
+    it('expands several roots in ONE walk, not one walk per root', async () => {
+      // The N+1 guard. The group-detail screen asks for self + parent +
+      // siblings + children at once; if this looped per root the query count
+      // would scale with the number of relation cards on screen.
+      wireDescendants({ r1: ['a'], r2: ['b'], r3: ['c'] });
+
+      const map = await getSubtreeGroups(['r1', 'r2', 'r3']);
+
+      expect(idsOf(map, 'r1')).toEqual(['a']);
+      expect(idsOf(map, 'r2')).toEqual(['b']);
+      expect(idsOf(map, 'r3')).toEqual(['c']);
+      // Two levels: one query finds a/b/c, the second finds they have no
+      // children. Crucially not 3 (or 6) — independent of the root count.
+      expect(mockPrisma.appGroup.findMany.mock.calls.length).toBe(2);
+    });
+
+    it('attributes a group to every root whose subtree contains it', async () => {
+      // Legitimate overlap: the group-detail screen for deptA asks for deptA
+      // AND its parent faculty in the same call, so `lab` belongs to both.
+      wireDescendants({ faculty: ['deptA'], deptA: ['lab'] });
+
+      const map = await getSubtreeGroups(['faculty', 'deptA']);
+
+      expect(new Set(idsOf(map, 'faculty'))).toEqual(new Set(['deptA', 'lab']));
+      expect(idsOf(map, 'deptA')).toEqual(['lab']);
+    });
+
+    it('does not list a root as its own descendant when roots are nested', async () => {
+      wireDescendants({ faculty: ['deptA'], deptA: ['lab'] });
+
+      const map = await getSubtreeGroups(['faculty', 'deptA']);
+      expect(idsOf(map, 'deptA')).not.toContain('deptA');
+    });
+
+    it('deduplicates rather than listing a group twice for one root', async () => {
+      wireDescendants({ r: ['x', 'x'] });
+      const map = await getSubtreeGroups(['r']);
+
+      expect(idsOf(map, 'r')).toEqual(['x']);
+    });
+
+    it('terminates on a malformed cycle instead of spinning', async () => {
+      // A group cannot really be its own ancestor — wouldCreateCycle blocks it
+      // at write time — but this walk must not depend on that guard holding.
+      wireDescendants({ a: ['b'], b: ['c'], c: ['a'] });
+
+      const map = await getSubtreeGroups(['a']);
+
+      expect(mockPrisma.appGroup.findMany.mock.calls.length).toBeLessThanOrEqual(MAX_GROUP_DEPTH + 2);
+      const ids = idsOf(map, 'a');
+      expect(new Set(ids).size).toBe(ids.length);
+      expect(ids).not.toContain('a');
+    });
+
+    it('is bounded by MAX_GROUP_DEPTH on a chain deeper than allowed', async () => {
+      wireDescendants({ g0: ['g1'], g1: ['g2'], g2: ['g3'], g3: ['g4'], g4: ['g5'], g5: ['g6'] });
+
+      await getSubtreeGroups(['g0']);
+
+      expect(mockPrisma.appGroup.findMany.mock.calls.length).toBeLessThanOrEqual(MAX_GROUP_DEPTH + 2);
+    });
+
+    it('does no work at all for an empty root list', async () => {
+      wireDescendants({});
+      const map = await getSubtreeGroups([]);
+
+      expect(map.size).toBe(0);
+      expect(mockPrisma.appGroup.findMany).not.toHaveBeenCalled();
+    });
+
+    it('ignores duplicate roots', async () => {
+      wireDescendants({ r: ['a'] });
+      const map = await getSubtreeGroups(['r', 'r']);
+
+      expect(map.size).toBe(1);
+      expect(idsOf(map, 'r')).toEqual(['a']);
     });
   });
 

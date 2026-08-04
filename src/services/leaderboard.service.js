@@ -1,4 +1,5 @@
 import prisma from '../config/prisma.js';
+import { getSubtreeGroups } from './group.scope.js';
 import { getPeriodPointsByUser } from './pointsLedger.service.js';
 
 /**
@@ -85,38 +86,12 @@ const applyAllTimeSteps = async (usersList) => {
  */
 
 /**
- * Generates a global leaderboard ranked by cumulative (all-time) step count.
- * Steps are aggregated from HealthRecord; the top `limit` step-earners are then
- * hydrated with their profile details. Users with no health records simply
- * don't appear (they have 0 steps).
- * @param {number} limit
- * @returns {Promise<Array>}
+ * ⛔ `getGlobalLeaderboard` was removed on 2026-08-03 along with its route
+ * (TEST_FINDINGS F2). Every leaderboard in this service is now SCOPED — to a
+ * friend graph or to a group — which is the point: ranking is a property of a
+ * relationship, not of the whole faculty. See the note in
+ * `routes/leaderboard.routes.js` before adding an unscoped one back.
  */
-export const getGlobalLeaderboard = async (limit = 10) => {
-  const stepAgg = await prisma.healthRecord.groupBy({
-    by: ['userId'],
-    _sum: { steps: true },
-    orderBy: { _sum: { steps: 'desc' } },
-    take: limit,
-  });
-
-  const userIds = stepAgg.map((s) => s.userId);
-  if (userIds.length === 0) return [];
-
-  const users = await prisma.user.findMany({
-    where: { id: { in: userIds } },
-    select: { id: true, fullName: true, avatarUrl: true, department: true },
-  });
-  const userMap = new Map(users.map((u) => [u.id, u]));
-
-  return stepAgg
-    .filter((s) => userMap.has(s.userId))
-    .map((s, index) => ({
-      ...userMap.get(s.userId),
-      steps: s._sum.steps || 0,
-      rank: index + 1,
-    }));
-};
 
 /**
  * Generates a leaderboard among a user and their friends
@@ -174,15 +149,28 @@ export const getFriendsLeaderboard = async (userId, startDate, endDate) => {
 };
 
 /**
- * Generates a leaderboard for a specific group
- * @param {string} groupId 
+ * Generates a leaderboard for a specific group, covering its WHOLE SUBTREE
+ * (ADR-003). A parent group whose people have all joined its child groups used
+ * to return an empty ranking; it now ranks everyone beneath it.
+ *
+ * Each row carries `groups[]` — the descendants of `groupId` that the person
+ * belongs to. The viewed group itself is never listed, so a leaf group yields
+ * `groups: []` on every row and the client can hide the column without needing
+ * to know whether this group has children.
+ *
+ * Everyone appears once however many sub-groups they are in.
+ *
+ * @param {string} groupId
  * @param {string} startDate
  * @param {string} endDate
  * @returns {Promise<Array>}
  */
 export const getGroupLeaderboard = async (groupId, startDate, endDate) => {
+  const descendants = (await getSubtreeGroups([groupId])).get(groupId) ?? [];
+  const nameByGroupId = new Map(descendants.map((g) => [g.id, g.name]));
+
   const groupMembers = await prisma.groupMember.findMany({
-    where: { groupId },
+    where: { groupId: { in: [groupId, ...descendants.map((g) => g.id)] } },
     include: {
       user: {
         select: { id: true, fullName: true, avatarUrl: true, totalPoints: true, department: true }
@@ -190,7 +178,27 @@ export const getGroupLeaderboard = async (groupId, startDate, endDate) => {
     }
   });
 
-  const membersList = groupMembers.map(member => member.user);
+  // Fold the membership rows into one entry per person, collecting the
+  // sub-groups they belong to as we go.
+  const byUserId = new Map();
+  for (const member of groupMembers) {
+    if (!member.user) continue;
+    if (!byUserId.has(member.user.id)) {
+      byUserId.set(member.user.id, { ...member.user, groups: [] });
+    }
+    if (member.groupId && member.groupId !== groupId) {
+      byUserId
+        .get(member.user.id)
+        .groups.push({ id: member.groupId, name: nameByGroupId.get(member.groupId) ?? '' });
+    }
+  }
+
+  const membersList = [...byUserId.values()];
+  // Plain string comparison rather than localeCompare, whose result depends on
+  // the runtime's ICU data — order is cosmetic, determinism is not.
+  for (const user of membersList) {
+    user.groups.sort((a, b) => (a.name < b.name ? -1 : a.name > b.name ? 1 : 0));
+  }
 
   if (startDate && endDate) {
     await applyPeriodPoints(membersList, startDate, endDate);
@@ -208,7 +216,6 @@ export const getGroupLeaderboard = async (groupId, startDate, endDate) => {
 };
 
 export default {
-  getGlobalLeaderboard,
   getFriendsLeaderboard,
   getGroupLeaderboard
 };

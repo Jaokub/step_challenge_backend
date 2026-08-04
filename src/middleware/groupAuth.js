@@ -16,6 +16,9 @@ import { resolveGroupAccess } from '../services/group.scope.js';
  *   (kept configurable so each route preserves its original wording).
  * @param {number} [options.notMemberStatus=403] - Status when the caller is not a
  *   member (leaveGroup historically returns 404 here).
+ * @param {string} [options.param='id'] - Which route param holds the group id.
+ *   Routes that name it something else (e.g. `/group/:groupId`) must say so, or
+ *   the lookup runs with `undefined` and denies everyone.
  * @returns {import('express').RequestHandler}
  *
  * @example
@@ -24,10 +27,10 @@ import { resolveGroupAccess } from '../services/group.scope.js';
  *   roleMessage: 'Only the group owner can delete the group',
  * }), deleteGroup);
  */
-export const requireGroupMember = ({ roles = null, roleMessage = 'Access denied. Insufficient permissions.', notMemberStatus = 403 } = {}) => {
+export const requireGroupMember = ({ roles = null, roleMessage = 'Access denied. Insufficient permissions.', notMemberStatus = 403, param = 'id' } = {}) => {
   return async (req, res, next) => {
     try {
-      const groupId = req.params.id;
+      const groupId = req.params[param];
       const userId = req.user.id;
 
       // Faculty Admin (global role) is a super-admin over every group —
@@ -83,25 +86,45 @@ export const requireGroupMember = ({ roles = null, roleMessage = 'Access denied.
 
 /**
  * Hierarchy visibility middleware factory. Resolves the caller's relation to
- * `req.params.id` (self / ancestor / sibling / none) via group.scope.js and
+ * the target group (self / ancestor / sibling / none) via group.scope.js and
  * only allows the request through if that relation is in `allow`.
  *
- * The one rule this enforces everywhere it's used on the "sibling" side:
- * siblings only ever get stat-level data, never a member ranking — that's
- * guaranteed by which service function the route handler calls next, not by
- * this middleware, but this middleware is what keeps a sibling from calling
- * the *own-ranking* route for a group that isn't theirs.
+ * ── The visibility model this enforces (settled with the product owner,
+ *    2026-08-03; see CLAUDE.md "Hierarchy visibility") ──
+ *
+ *   viewer → target      overall stats   full member ranking
+ *   self                 ✅              ✅
+ *   ancestor (parent…)   ✅              ✅
+ *   descendant (child)   ✅              ❌  (stats + top 3 only)
+ *   sibling              ✅              ❌  (stats + top 3 only)
+ *   unrelated            ❌              ❌
+ *
+ * Member-level ranking flows DOWNWARD only. Looking up or sideways gets an
+ * aggregate plus a bounded Top-3 preview, never the full list.
+ *
+ * `allow: ['self', 'ancestor']` is therefore the guard for every full-ranking
+ * route. Siblings and children reach their bounded view through different
+ * endpoints (`/groups/:id/siblings`, `/groups/:id/hierarchy-overview`), which
+ * slice to top3 in the service layer — this middleware is what stops them
+ * calling the full-ranking route directly.
+ *
+ * Note "ancestor" is granted on MEMBERSHIP in an ancestor group, deliberately
+ * without a role check: any member of a parent group sees its descendants'
+ * rankings. Group OWNER/ADMIN is about administering a group (settings,
+ * enrolling it into activities), not about seeing more.
  *
  * @param {string[]} allow - relations that may proceed, e.g. ['self', 'ancestor'].
+ * @param {Object} [options]
+ * @param {string} [options.param='id'] - Which route param holds the group id.
  * @returns {import('express').RequestHandler}
  *
  * @example
  * router.get('/:id/overview', authenticate, requireGroupVisibility(['self', 'ancestor']), getGroupOverview);
  */
-export const requireGroupVisibility = (allow) => {
+export const requireGroupVisibility = (allow, { param = 'id' } = {}) => {
   return async (req, res, next) => {
     try {
-      const groupId = req.params.id;
+      const groupId = req.params[param];
       const userId = req.user.id;
 
       const target = await prisma.appGroup.findUnique({

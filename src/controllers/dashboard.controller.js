@@ -1,7 +1,7 @@
 import prisma from '../config/prisma.js';
 import { calculateCheckInStreak } from '../services/streak.service.js';
 import { thaiDayTag, thaiDayTagEnd, thaiMonthStartInstant, thaiParts } from '../utils/thaiTime.js';
-import { activityStatusWhere } from '../utils/activityStatus.js';
+import { activityStatusWhere, upcomingOrOngoingWhere } from '../utils/activityStatus.js';
 
 /**
  * @desc    Get personal dashboard data for the current user
@@ -62,11 +62,25 @@ export const getPersonalDashboard = async (req, res) => {
         },
       }),
 
-      // Upcoming activities (next 5 that user hasn't checked into yet)
+      // Next 5 activities that haven't finished and that this user hasn't
+      // checked into yet.
+      //
+      // Both halves of that sentence were broken until 2026-08-03
+      // (TEST_FINDINGS F3 + F4):
+      //   - the filter was `status IN ('UPCOMING','ONGOING') AND startDate >=
+      //     now`, so an activity happening RIGHT NOW could never appear — it
+      //     has already started, so `startDate >= now` excluded it and the
+      //     'ONGOING' half of the status clause was dead. It was also the last
+      //     reader still trusting the stored `status` column, which
+      //     activityStatus.js exists to stop anyone doing (the column is
+      //     assign-once and never transitions).
+      //   - "that user hasn't checked into yet" was only ever a comment; the
+      //     query had no `userId` in it at all, so an activity you had already
+      //     attended kept occupying one of your five slots.
       prisma.activity.findMany({
         where: {
-          status: { in: ['UPCOMING', 'ONGOING'] },
-          startDate: { gte: now },
+          ...upcomingOrOngoingWhere(now),
+          checkIns: { none: { userId } },
         },
         orderBy: { startDate: 'asc' },
         take: 5,
@@ -167,9 +181,21 @@ export const getAdminDashboard = async (req, res) => {
         },
       }),
 
-      // Most active users (top 5 by check-in count)
+      // Most active users (top 5 by check-in count).
+      //
+      // Ordered by the same figure the screen shows. Until 2026-08-03 this
+      // said `orderBy: { totalPoints: 'desc' }` while surfacing
+      // `checkInCount`, so the list could legitimately read 9, 2, 30 — sorted
+      // by one number, labelled with another (TEST_FINDINGS F5). Worse,
+      // `totalPoints` is the dormant cache: points accrue mostly from
+      // HEALTH_SYNC, so it ranked whoever synced their phone most often, not
+      // whoever turned up to activities.
+      //
+      // `totalPoints` stays in the select rather than being stripped — the
+      // ledger is deliberately dormant, not dismantled (CLAUDE.md), and the
+      // mobile `User` type still declares the field. Just don't rank by it.
       prisma.user.findMany({
-        orderBy: { totalPoints: 'desc' },
+        orderBy: { checkIns: { _count: 'desc' } },
         take: 5,
         select: {
           id: true,

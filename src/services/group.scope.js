@@ -121,6 +121,66 @@ export const resolveGroupAccess = async (userId, targetGroupId) => {
 };
 
 /**
+ * Every descendant of each given group, batched — the read side of ADR-003.
+ *
+ * Walks the tree one level at a time for ALL requested roots at once, so the
+ * query count is bounded by depth rather than by how many groups were asked
+ * for. That property is what lets `getGroupsPeriodSteps` aggregate a whole
+ * subtree without an N+1; see ADR-003 "The engine".
+ *
+ * Selects `name` alongside `id` because callers need it for the sub-group
+ * badges on ranking rows, and fetching it here avoids a second lookup.
+ *
+ * A group has exactly one parent, so subtrees of unrelated roots are disjoint
+ * — but a caller may legitimately ask for a group AND one of its own
+ * descendants (the group-detail screen asks for self + parent + siblings +
+ * children at once). Attribution is therefore per-root, and a group can appear
+ * in more than one root's list.
+ *
+ * @param {string[]} groupIds - roots to expand. Duplicates are ignored.
+ * @returns {Promise<Map<string, Array<{id: string, name: string}>>>} descendants
+ *   per root, **excluding the root itself**, breadth-first.
+ */
+export const getSubtreeGroups = async (groupIds) => {
+  const roots = [...new Set(groupIds)];
+  const result = new Map(roots.map((id) => [id, []]));
+  if (roots.length === 0) return result;
+
+  // groupId -> the roots whose subtree it currently sits in.
+  let frontier = new Map(roots.map((id) => [id, new Set([id])]));
+  // Per root, everything already attributed. Seeded with the root so it is
+  // never listed as its own descendant, and so a malformed cycle terminates
+  // instead of re-adding groups forever.
+  const seen = new Map(roots.map((id) => [id, new Set([id])]));
+
+  for (let depth = 0; depth <= MAX_GROUP_DEPTH + 1 && frontier.size; depth++) {
+    const children = await prisma.appGroup.findMany({
+      where: { parentGroupId: { in: [...frontier.keys()] } },
+      select: { id: true, name: true, parentGroupId: true },
+    });
+    if (children.length === 0) break;
+
+    const next = new Map();
+    for (const child of children) {
+      const owningRoots = frontier.get(child.parentGroupId);
+      if (!owningRoots) continue;
+
+      for (const rootId of owningRoots) {
+        if (seen.get(rootId).has(child.id)) continue;
+        seen.get(rootId).add(child.id);
+        result.get(rootId).push({ id: child.id, name: child.name });
+
+        if (!next.has(child.id)) next.set(child.id, new Set());
+        next.get(child.id).add(rootId);
+      }
+    }
+    frontier = next;
+  }
+
+  return result;
+};
+
+/**
  * Sibling groups of `groupId` (same parent, excluding itself). Empty array
  * if the group has no parent.
  * @param {string} groupId
@@ -153,6 +213,7 @@ export default {
   getAncestorIds,
   getViewerGroupIds,
   resolveGroupAccess,
+  getSubtreeGroups,
   getSiblingGroups,
   getChildGroups,
 };

@@ -5,30 +5,6 @@ import leaderboardService from '../services/leaderboard.service.js';
  */
 
 /**
- * Get global leaderboard
- * @route GET /api/leaderboard/global
- */
-export const getGlobalLeaderboard = async (req, res) => {
-  try {
-    const limit = parseInt(req.query.limit, 10) || 50;
-    const leaderboard = await leaderboardService.getGlobalLeaderboard(limit);
-    
-    return res.status(200).json({
-      success: true,
-      data: leaderboard,
-      message: 'Global leaderboard retrieved successfully'
-    });
-  } catch (error) {
-    console.error('getGlobalLeaderboard error:', error);
-    return res.status(500).json({
-      success: false,
-      data: null,
-      message: 'Failed to retrieve global leaderboard'
-    });
-  }
-};
-
-/**
  * Get friends leaderboard
  * @route GET /api/leaderboard/friends
  */

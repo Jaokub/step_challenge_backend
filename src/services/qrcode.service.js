@@ -41,19 +41,25 @@ export function generateUniqueCode() {
 }
 
 /**
- * Generate a QR code containing an activity identifier
- * @param {string} activityId - The activity ID to encode
- * @returns {Promise<string>} Base64 data URL of the QR code
+ * ⛔ `generateActivityQR` was removed on 2026-08-04 (TEST_FINDINGS F8). It
+ * built an `{ type: 'ACTIVITY_CHECKIN', activityId, generatedAt }` envelope
+ * that nothing produced and nothing parsed.
+ *
+ * Activity check-in QR codes are not generated here at all. The admin screen
+ * `app/admin/activities/[id]/qr.tsx` renders them ON DEVICE with
+ * `react-native-qrcode-svg`, encoding the activity's `qrCode` column — a bare
+ * `uuidv4()` — and `checkInByQR` resolves a scan with
+ * `activity.findUnique({ where: { qrCode } })`, an exact string match against
+ * that same value. There is no JSON envelope anywhere in that loop.
+ *
+ * Since 2026-08-03 the mobile scanner also classifies any unrecognised JSON
+ * payload as invalid (`classifyScannedQR`), so an ACTIVITY_CHECKIN envelope
+ * would now be actively rejected. Keeping the generator would have been
+ * keeping a function whose output the app refuses.
+ *
+ * Group invites are the opposite case and stay below: that envelope IS
+ * produced here, displayed by `GroupQrModal`, and parsed by the scanner.
  */
-export async function generateActivityQR(activityId) {
-  const payload = JSON.stringify({
-    type: 'ACTIVITY_CHECKIN',
-    activityId,
-    generatedAt: new Date().toISOString(),
-  });
-
-  return generateQRCode(payload);
-}
 
 /**
  * Generate a QR code containing group invite data

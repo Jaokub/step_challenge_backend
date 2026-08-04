@@ -1,8 +1,13 @@
 /**
- * BUILD_PLAN.md Phase 6A, step 1: smoke-test the two leaderboard endpoints
- * that were only ever compile-verified, never run against real data —
- * GET /leaderboard/global (the screen that used to hit a dead 404 route)
- * and GET /leaderboard/friends (the friends tab's new data source).
+ * BUILD_PLAN.md Phase 6A, step 1: smoke-test the leaderboard endpoints against
+ * real data, since they were originally only ever compile-verified.
+ *
+ * Covers GET /leaderboard/friends (the friends tab's data source) and asserts
+ * that GET /leaderboard/global is **gone** — it was deleted on 2026-08-03
+ * (TEST_FINDINGS F2). That last check earns its keep because this script hits
+ * the deployed backend: a stale Vercel deployment could keep serving the route
+ * long after the source that defined it was removed, and nothing in the unit
+ * suite can see that.
  *
  * Run this on a machine that can actually reach the app's DB (Neon) and has
  * a Prisma query engine matching its own OS — this sandbox has neither
@@ -72,25 +77,16 @@ const main = async () => {
       body: await r.json(),
     }));
 
-  // 2) GET /leaderboard/global
-  const global = await authedGet('/leaderboard/global');
-  log('GET /leaderboard/global', global);
-  if (global.status !== 200) fail(`/leaderboard/global returned HTTP ${global.status}`);
-  const globalRows = global.body?.data ?? global.body ?? [];
-  if (!Array.isArray(globalRows)) fail('/leaderboard/global did not return an array');
-  else {
-    const stepsDescending = globalRows.every(
-      (row, i) => i === 0 || (globalRows[i - 1].steps ?? 0) >= (row.steps ?? 0)
-    );
-    const ranksSequential = globalRows.every((row, i) => row.rank === i + 1);
-    if (!stepsDescending) fail('/leaderboard/global rows are not sorted by steps descending');
-    if (!ranksSequential) fail('/leaderboard/global rank numbering is not 1..N');
-    if (stepsDescending && ranksSequential) {
-      console.log(`✅ /leaderboard/global: ${globalRows.length} row(s), ranked by steps, ranks 1..N.`);
-    }
-    if (globalRows.length === 0) {
-      console.log('ℹ️  Empty result — fine if no one has synced HealthRecord data yet, but worth eyeballing.');
-    }
+  // 2) GET /leaderboard/global must be GONE (deleted 2026-08-03, F2).
+  //    Checked rather than dropped: this script runs against the DEPLOYED
+  //    backend, so it is the only thing in the repo that can catch the route
+  //    surviving on Vercel after the code that defined it was removed.
+  const removed = await authedGet('/leaderboard/global');
+  if (removed.status === 200) {
+    log('GET /leaderboard/global', removed);
+    fail('/leaderboard/global still responds 200 — the route was deleted on 2026-08-03; is this deployment stale?');
+  } else {
+    console.log(`✅ /leaderboard/global is gone (HTTP ${removed.status}).`);
   }
 
   // 3) GET /leaderboard/friends
